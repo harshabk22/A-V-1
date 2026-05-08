@@ -1,0 +1,11 @@
+[package]
+name = "ageex_agent_sdk"
+version = "0.1.0"
+edition = "2021"
+description = "WASM agent SDK — zero-trust capability-request ABI for Ageex agents (wasm32-wasi target)"
+
+[dependencies]
+ageex_wire = { path = "../../../crates/ageex_wire" }
+
+[lib]
+crate-type = ["rlib"]

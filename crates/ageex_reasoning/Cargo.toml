@@ -1,0 +1,15 @@
+[package]
+name = "ageex_reasoning"
+version = "0.1.0"
+edition = "2021"
+description = "Ageex Reasoning Layer — wasmtime host runtime with capability-gated ABI and strict fuel metering"
+
+[dependencies]
+ageex_wire = { path = "../ageex_wire" }
+wasmtime = "25.0.3"
+tokio = { version = "1.37", features = ["sync", "macros", "rt"] }
+thiserror = "1.0"
+tracing = "0.1"
+
+[features]
+default = []

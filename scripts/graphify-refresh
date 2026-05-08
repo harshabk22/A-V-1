@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_bin="$repo_root/.venv-graphifyy/bin/python"
+
+if [[ ! -x "$python_bin" ]]; then
+  echo "graphify: local install missing at .venv-graphifyy/bin/python"
+  echo "Install it with: python3 -m venv .venv-graphifyy && ./.venv-graphifyy/bin/pip install graphifyy"
+  exit 1
+fi
+
+cd "$repo_root"
+exec "$python_bin" "$repo_root/scripts/graphify_refresh.py" .

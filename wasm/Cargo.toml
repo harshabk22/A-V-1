@@ -1,0 +1,3 @@
+[workspace]
+members = ["agents/sdk"]
+resolver = "2"

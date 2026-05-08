@@ -1,0 +1,5 @@
+cd ageex_ui/src-tauri
+echo "sandbox/" >> .taurignore
+echo "sandbox/*" >> .taurignore
+cd ..sandbox/
+sandbox/*
