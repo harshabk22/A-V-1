@@ -1,4 +1,40 @@
+# Node
+node_modules/
+dist/
+build/
+
+# Rust
+target/
+
+# Environment
+.env
+.env.local
+
+# macOS
 .DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Database / binaries
+*.db
+*.bin
+
+# Generated outputs
+output.json
+test_output.txt
+autonomous_agent_output.txt
+
+# Sandbox
+sandbox/
+
+# Python cache
+__pycache__/
+*.pyc.DS_Store
 
 # Environment variables
 .env
