@@ -6,6 +6,7 @@ import ConsentModal from "./ConsentModal";
 import SettingsModal from "./SettingsModal";
 import TelemetryDrawer from "./TelemetryDrawer";
 import { useChatStore } from "../stores/chatStore";
+import { useReasoningStore } from "../stores/reasoningStore";
 import { useConsentStore } from "../stores/consentStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useTelemetryStore } from "../stores/telemetryStore";
@@ -30,6 +31,12 @@ import {
   type ShortcutRecord,
   parseAskChoiceTelemetry,
   parseBackgroundErrorTelemetry,
+  REASONING_ENVELOPE_EVENT,
+  REASONING_VIOLATION_EVENT,
+  REASONING_YIELD_EVENT,
+  type AirgapEnvelopeEvent,
+  type SecurityViolationEvent,
+  type AgentYieldEvent,
 } from "../types/ipc";
 
 function createTelemetryId(prefix: string): string {
@@ -109,6 +116,7 @@ export default function AppShell() {
   const [isCompactLayout, setIsCompactLayout] = useState<boolean>(() =>
     typeof window !== "undefined" ? window.innerWidth < 1180 : false,
   );
+  const [showAgents, setShowAgents] = useState(false);
   const setBooting = useChatStore((state) => state.setBooting);
   const setProcessing = useChatStore((state) => state.setProcessing);
   const setStatusText = useChatStore((state) => state.setStatusText);
@@ -317,6 +325,21 @@ export default function AppShell() {
             .catch(() => {
               // Keep gateway event failures quiet in the background; explicit user actions already surface hard errors.
             });
+        }),
+      );
+      unlisteners.push(
+        await listen<AirgapEnvelopeEvent>(REASONING_ENVELOPE_EVENT, (event) => {
+          useReasoningStore.getState().handleEnvelopeEvent(event.payload);
+        }),
+      );
+      unlisteners.push(
+        await listen<SecurityViolationEvent>(REASONING_VIOLATION_EVENT, (event) => {
+          useReasoningStore.getState().handleViolationEvent(event.payload);
+        }),
+      );
+      unlisteners.push(
+        await listen<AgentYieldEvent>(REASONING_YIELD_EVENT, (event) => {
+          useReasoningStore.getState().handleYieldEvent(event.payload);
         }),
       );
     };
@@ -680,6 +703,14 @@ export default function AppShell() {
     setShowMemory(!state.showMemory);
   };
 
+  const handleToggleAgents = () => {
+    const state = useChatStore.getState();
+    if (state.isBooting) {
+      return;
+    }
+    setShowAgents((prev) => !prev);
+  };
+
   const handleDeleteKnowledgeMemory = async (id: string) => {
     try {
       await invoke("delete_knowledge_memory", { id });
@@ -771,6 +802,8 @@ export default function AppShell() {
         selectedSessionId={selectedSessionId}
         selectedSessionContext={selectedSessionContext}
         onSelectSession={loadGatewaySession}
+        showAgents={showAgents}
+        onToggleAgents={handleToggleAgents}
       />
       </div>
       <TelemetryDrawer compactLayout={isCompactLayout} />

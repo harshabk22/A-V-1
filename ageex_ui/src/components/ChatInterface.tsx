@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useChatStore } from "../stores/chatStore";
+import ReasoningPanel from "./ReasoningPanel";
 import {
   type GatewaySessionContext,
   type MemoryOverview,
@@ -137,6 +138,8 @@ interface ChatInterfaceProps {
   selectedSessionId: string | null;
   selectedSessionContext: GatewaySessionContext | null;
   onSelectSession: (sessionId: string) => Promise<void>;
+  showAgents: boolean;
+  onToggleAgents: () => void;
 }
 
 /** Inline SVG microphone icon for the voice toggle button. */
@@ -174,6 +177,8 @@ export default function ChatInterface({
   selectedSessionId,
   selectedSessionContext,
   onSelectSession,
+  showAgents,
+  onToggleAgents,
 }: ChatInterfaceProps) {
   const messages = useChatStore((state) => state.messages);
   const input = useChatStore((state) => state.input);
@@ -450,6 +455,21 @@ export default function ChatInterface({
             }}
           >
             {showMemory ? "Hide Memory" : "Memory"}
+          </button>
+          <button
+            type="button"
+            onClick={onToggleAgents}
+            disabled={isBooting}
+            style={{
+              border: "1px solid #2f3b4f",
+              background: showAgents ? "#172132" : "#101722",
+              color: isBooting ? "#596579" : "#edf3ff",
+              borderRadius: "999px",
+              padding: "9px 14px",
+              cursor: isBooting ? "not-allowed" : "pointer",
+            }}
+          >
+            {showAgents ? "Hide Agents" : "Agents"}
           </button>
           <button
             type="button"
@@ -1128,6 +1148,9 @@ export default function ChatInterface({
               </div>
             </div>
           </aside>
+        )}
+        {showAgents && (
+          <ReasoningPanel />
         )}
       </div>
 

@@ -36,6 +36,9 @@ moat_core = { path = "../../moat_core" }
 ageex_reasoning = { path = "../../crates/ageex_reasoning" }
 tokio-tungstenite = "0.29.0"
 futures-util = "0.3.32"
+base64 = "0.22"
+blake3 = "1"
+hex = "0.4"
 
 [features]
 default = ["whisper"]

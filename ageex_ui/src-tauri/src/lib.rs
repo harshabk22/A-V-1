@@ -1,6 +1,7 @@
 mod context_scraper;
 mod ui_bridge_impl;
 mod ui_scraper;
+mod reasoning_bridge;
 
 use keyring::Entry;
 use moat_core::config::{
@@ -24,6 +25,7 @@ use moat_core::system::{MemoryOverview, MoatSystem, MoatSystemConfig, VoiceStatu
 use moat_core::voice::messages::{BrainToEar, BrainToMouth, EarToBrain};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use reasoning_bridge::{ReasoningBridge, StepOutcomePayload};
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -176,6 +178,8 @@ pub struct AppState {
     voice_status: Arc<AsyncMutex<VoiceStatus>>,
     /// Gateway transport bind info for socket-based RPC from the desktop client.
     gateway_info: Arc<AsyncMutex<Option<GatewayServerInfo>>>,
+    /// WASM reasoning engine and agent instances.
+    reasoning: Arc<AsyncMutex<ReasoningBridge>>,
 }
 
 fn initial_voice_status() -> VoiceStatus {
@@ -1249,6 +1253,96 @@ async fn stop_voice_session(
     }
 }
 
+#[tauri::command]
+async fn init_reasoning_engine(
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let mut bridge = state.reasoning.lock().await;
+    bridge.init_engine().await?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn instantiate_agent(
+    wasm_bytes_base64: String,
+    agent_label: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    use base64::Engine;
+    let mut bridge = state.reasoning.lock().await;
+    let engine = bridge
+        .engine
+        .as_ref()
+        .ok_or_else(|| "ReasoningEngine not initialized. Call init_reasoning_engine first.".to_string())?;
+    let wasm_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&wasm_bytes_base64)
+        .map_err(|e| format!("Invalid base64 WASM bytes: {}", e))?;
+    let mut agent_id = [0u8; 32];
+    let hash = blake3::hash(&wasm_bytes);
+    agent_id.copy_from_slice(&hash.as_bytes()[..32]);
+    let instance = engine
+        .instantiate(&wasm_bytes, agent_id)
+        .await
+        .map_err(|e| format!("Failed to instantiate agent: {}", e))?;
+    let id_key = format!("{}:{}", agent_label, hex::encode(agent_id));
+    bridge.instances.insert(id_key.clone(), instance);
+    Ok(bridge.instances.keys().cloned().collect())
+}
+
+#[tauri::command]
+async fn step_agent(
+    agent_key: String,
+    fuel_budget: Option<u64>,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<StepOutcomePayload, String> {
+    let mut bridge = state.reasoning.lock().await;
+    let instance = bridge
+        .instances
+        .get_mut(&agent_key)
+        .ok_or_else(|| format!("Agent '{}' not found", agent_key))?;
+    let outcome = instance
+        .call_step(fuel_budget)
+        .await
+        .map_err(|e| format!("Agent step failed: {}", e))?;
+    if outcome.agent_yielded {
+        let yield_msg = String::from_utf8_lossy(&outcome.yield_message).to_string();
+        let _ = app.emit(
+            "reasoning-agent-yield",
+            serde_json::json!({
+                "agentId": agent_key,
+                "yieldMessage": yield_msg,
+                "envelopesSent": outcome.total_requests_sent,
+                "fuelUsed": outcome.fuel_used,
+            }),
+        );
+    }
+    Ok(StepOutcomePayload {
+        agent_yielded: outcome.agent_yielded,
+        yield_message: String::from_utf8_lossy(&outcome.yield_message).to_string(),
+        total_requests_sent: outcome.total_requests_sent,
+        fuel_used: outcome.fuel_used,
+    })
+}
+
+#[tauri::command]
+async fn list_agents(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let bridge = state.reasoning.lock().await;
+    Ok(bridge.instances.keys().cloned().collect())
+}
+
+#[tauri::command]
+async fn destroy_agent(
+    agent_key: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mut bridge = state.reasoning.lock().await;
+    bridge.instances.remove(&agent_key);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1330,6 +1424,28 @@ pub fn run() {
                     .filter(|value| !value.trim().is_empty()),
             };
             let ui_element_map = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let reasoning_bridge = Arc::new(AsyncMutex::new(ReasoningBridge::new()));
+            let envelope_app_handle = app.handle().clone();
+            {
+                let bridge = Arc::clone(&reasoning_bridge);
+                tauri::async_runtime::spawn(async move {
+                    let mut guard = bridge.lock().await;
+                    match guard.init_engine().await {
+                        Ok(()) => {
+                            let _ = envelope_app_handle.emit(
+                                "live-telemetry",
+                                "[REASONING] Engine initialized. Ready for WASM agents.",
+                            );
+                        }
+                        Err(e) => {
+                            let _ = envelope_app_handle.emit(
+                                "live-telemetry",
+                                format!("[REASONING] Engine init failed: {}", e),
+                            );
+                        }
+                    }
+                });
+            }
             app.manage(AppState {
                 kernel: Arc::clone(&kernel),
                 consent_bridge: Arc::clone(&consent_bridge),
@@ -1337,6 +1453,7 @@ pub fn run() {
                 voice_session: Arc::new(AsyncMutex::new(None)),
                 voice_status: Arc::clone(&voice_status),
                 gateway_info: Arc::clone(&gateway_info),
+                reasoning: Arc::clone(&reasoning_bridge),
             });
 
             let app_handle = app.handle().clone();
@@ -1497,7 +1614,12 @@ pub fn run() {
             stop_voice_session,
             resolve_choice,
             fetch_nvidia_models,
-            validate_nvidia_inference
+            validate_nvidia_inference,
+            init_reasoning_engine,
+            instantiate_agent,
+            step_agent,
+            list_agents,
+            destroy_agent
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|err| eprintln!("error while running tauri application: {err}"));
