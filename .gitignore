@@ -39,3 +39,10 @@ graphify-out/
 
 # Dev archive (scripts, references, tooling)
 _dev/
+
+# Agent tooling (local-only, not part of codebase)
+.agent/
+.codex/
+AGENTS.md
+opencode.json
+scripts/
