@@ -43,6 +43,22 @@ impl CapOp {
     pub fn from_byte_tag(b: u8) -> Option<Self> {
         Self::from_u32(b as u32)
     }
+
+    /// Returns the clean variant name for UI / JSON serialization.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::FileRead => "FileRead",
+            Self::FileWrite => "FileWrite",
+            Self::ProcessSpawn => "ProcessSpawn",
+            Self::NetworkOutbound => "NetworkOutbound",
+            Self::AppLaunch => "AppLaunch",
+            Self::MemorySearch => "MemorySearch",
+            Self::MemoryStore => "MemoryStore",
+            Self::DelegateTask => "DelegateTask",
+            Self::ConsentRequest => "ConsentRequest",
+            Self::YieldDone => "YieldDone",
+        }
+    }
 }
 
 impl fmt::Display for CapOp {

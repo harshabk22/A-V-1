@@ -1,9 +1,7 @@
-use ageex_reasoning::{AirgapEnvelope, ReasoningEngine, ReasoningInstance, StepOutcome};
+use ageex_reasoning::{AirgapEnvelope, ReasoningEngine, ReasoningInstance};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
