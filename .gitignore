@@ -29,34 +29,13 @@ output.json
 test_output.txt
 autonomous_agent_output.txt
 
-# Sandbox
-sandbox/
-
 # Python cache
 __pycache__/
-*.pyc.DS_Store
-
-# Environment variables
-.env
-.env.local
-
-# Node
-node_modules/
-
-# Build outputs
-dist/
-build/
-
-# Logs
-*.log
-
-# IDE
-.vscode/
-.idea/
-
-# Python
-__pycache__/
 *.pyc
+
+# Graphify
 .venv-graphifyy/
 graphify-out/
-references/
+
+# Dev archive (scripts, references, tooling)
+_dev/
