@@ -8,6 +8,7 @@ pub mod gateway;
 pub mod gateway_transport;
 pub mod hooks;
 pub mod injector;
+pub mod llm;
 pub mod manifest;
 pub mod mcp;
 pub mod memory;
