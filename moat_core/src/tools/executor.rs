@@ -4,6 +4,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 pub struct ToolExecutor {
     meta_brain: Arc<Mutex<MetaBrain>>,
@@ -120,6 +121,12 @@ impl ToolExecutor {
     }
 
     fn execute_write_file(path: &str, content: &str) -> Result<String> {
+        if content.is_empty() && Path::new(path).exists() {
+            return Err(anyhow::anyhow!(
+                "[fs:write] DENIED: Empty write to existing file detected. Use fs_delete to delete files."
+            ));
+        }
+
         if let Some(parent) = Path::new(path).parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -132,9 +139,62 @@ impl ToolExecutor {
         if !Path::new(path).exists() {
             return Ok(format!("[fs:delete] File not found: {}", path));
         }
-        std::fs::remove_file(path)
+
+        if Self::is_path_protected(Path::new(path)) {
+            return Err(anyhow::anyhow!(
+                "[fs:delete] DENIED: {:?} matches a protected pattern. Deletion denied.", path
+            ));
+        }
+
+        let trash_dir = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+            .join(".ageex").join("trash");
+        std::fs::create_dir_all(&trash_dir)?;
+
+        let original_name = Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let trash_name = format!("{}_{}", Uuid::new_v4(), original_name);
+        let trash_path = trash_dir.join(&trash_name);
+
+        std::fs::rename(path, &trash_path)
             .map_err(|e| anyhow::anyhow!("Delete failed: {}", e))?;
-        Ok(format!("[fs:delete] Deleted {}", path))
+
+        Ok(format!("[fs:delete] Deleted {} (moved to trash: {:?})", path, trash_path))
+    }
+
+    fn is_path_protected(path: &Path) -> bool {
+        let file_name = path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let path_str = path.to_string_lossy().to_string();
+
+        let patterns: &[&str] = &[
+            ".log", ".db", ".sqlite", ".key", ".pem",
+        ];
+
+        for pattern in patterns {
+            if file_name.ends_with(pattern) {
+                return true;
+            }
+        }
+
+        let exact_matches: &[&str] = &[
+            "Cargo.lock",
+        ];
+
+        for name in exact_matches {
+            if file_name == *name {
+                return true;
+            }
+        }
+
+        if path_str.contains(".git/") {
+            return true;
+        }
+
+        false
     }
 
     fn execute_process_spawn(command: &str, working_dir: &str) -> Result<String> {
@@ -327,6 +387,90 @@ mod tests {
             ToolExecutor::tool_to_del_capability("delete_file"),
             Capability::FileDelete
         );
+    }
+
+    #[test]
+    fn test_delete_file_moves_to_trash() {
+        let tmp = std::env::temp_dir();
+        let test_file = tmp.join("test_delete_me_trash.txt");
+        std::fs::write(&test_file, "hello world").unwrap();
+
+        let result = ToolExecutor::execute_delete_file(&test_file.to_string_lossy());
+        assert!(result.is_ok(), "Delete should succeed: {:?}", result);
+        let msg = result.unwrap();
+        assert!(msg.contains("trash"), "Output should mention trash: {}", msg);
+
+        assert!(!test_file.exists(), "File should be deleted from original location");
+
+        let trash_dir = dirs::home_dir().unwrap().join(".ageex").join("trash");
+        assert!(trash_dir.exists(), "Trash dir should exist");
+        let mut trash_found = false;
+        for entry in std::fs::read_dir(&trash_dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name().to_string_lossy().contains("test_delete_me_trash") {
+                trash_found = true;
+                std::fs::remove_file(entry.path()).ok();
+                break;
+            }
+        }
+        assert!(trash_found, "File should appear in trash directory");
+    }
+
+    #[test]
+    fn test_delete_nonexistent_file_returns_not_found() {
+        let tmp = std::env::temp_dir();
+        let nonexistent = tmp.join("does_not_exist_xyz_trash_test");
+        let _ = std::fs::remove_file(&nonexistent);
+
+        let result = ToolExecutor::execute_delete_file(&nonexistent.to_string_lossy());
+        assert!(result.is_ok(), "Return should be Ok (not found message)");
+        let msg = result.unwrap();
+        assert!(msg.contains("not found"), "Should report file not found, got: {}", msg);
+    }
+
+    #[test]
+    fn test_write_empty_to_existing_file_blocked() {
+        let tmp = std::env::temp_dir();
+        let test_file = tmp.join("existing_trash_test.txt");
+        std::fs::write(&test_file, "some content").unwrap();
+
+        let result = ToolExecutor::execute_write_file(
+            &test_file.to_string_lossy(),
+            ""
+        );
+        assert!(result.is_err(), "Empty write to existing file should be blocked");
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(err.contains("fs_delete") || err.contains("empty"),
+            "Error should mention deletion: {}", err);
+
+        std::fs::remove_file(&test_file).ok();
+    }
+
+    #[test]
+    fn test_delete_protected_file_denied() {
+        let tmp = std::env::temp_dir();
+        let protected_file = tmp.join("test_debug.log");
+        std::fs::write(&protected_file, "log content").unwrap();
+
+        let result = ToolExecutor::execute_delete_file(&protected_file.to_string_lossy());
+        assert!(result.is_err(), "Deleting *.log should be denied");
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(err.contains("DENIED") || err.contains("protected"),
+            "Error should mention protection: {}", err);
+
+        assert!(protected_file.exists(), "Protected file should still exist");
+        std::fs::remove_file(&protected_file).ok();
+    }
+
+    #[test]
+    fn test_delete_unprotected_file_succeeds() {
+        let tmp = std::env::temp_dir();
+        let normal_file = tmp.join("normal_rs_file_test.rs");
+        std::fs::write(&normal_file, "fn main() {}").unwrap();
+
+        let result = ToolExecutor::execute_delete_file(&normal_file.to_string_lossy());
+        assert!(result.is_ok(), "Deleting .rs file should succeed");
+        assert!(!normal_file.exists(), "File should be deleted");
     }
 }
 
