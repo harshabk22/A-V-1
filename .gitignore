@@ -46,3 +46,8 @@ _dev/
 AGENTS.md
 opencode.json
 scripts/
+
+# Worktrees
+.worktrees/
+worktrees/
+.worktrees/
