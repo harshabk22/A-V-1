@@ -1,4 +1,5 @@
 // moat_core/src/lib.rs
+pub mod capabilities;
 pub mod config;
 pub mod consent;
 pub mod execution_plan;
