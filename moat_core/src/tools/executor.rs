@@ -1,4 +1,5 @@
 use crate::capabilities::Capability;
+use crate::execution::journal::ExecutionJournal;
 use crate::meta_brain::{MetaBrain, PermissionFlags};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -9,6 +10,7 @@ use uuid::Uuid;
 pub struct ToolExecutor {
     meta_brain: Arc<Mutex<MetaBrain>>,
     agent_id: String,
+    journal: ExecutionJournal,
 }
 
 impl ToolExecutor {
@@ -16,9 +18,15 @@ impl ToolExecutor {
         meta_brain: Arc<Mutex<MetaBrain>>,
         agent_id: impl Into<String>,
     ) -> Self {
+        let journal = ExecutionJournal::open()
+            .unwrap_or_else(|e| {
+                eprintln!("[ToolExecutor] Journal unavailable: {}", e);
+                ExecutionJournal { path: std::path::PathBuf::new() }
+            });
         Self {
             meta_brain,
             agent_id: agent_id.into(),
+            journal,
         }
     }
 
@@ -49,7 +57,9 @@ impl ToolExecutor {
                     return Ok(format!("[fs:write] DENIED: No permission to write {}", raw_path));
                 }
                 let content = args["content"].as_str().unwrap_or("");
-                Self::execute_write_file(&normalized, content)
+                let result = Self::execute_write_file(&normalized, content)?;
+                self.journal.log_entry(&self.agent_id, "write_file", &normalized, true, &result);
+                Ok(result)
             }
             "fs_delete" => {
                 let raw_path = args["path"].as_str()
@@ -93,7 +103,9 @@ impl ToolExecutor {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("delete_file requires 'path' argument"))?;
                 let normalized = normalize_workspace_path(raw_path);
-                Self::execute_delete_file(&normalized)
+                let result = Self::execute_delete_file(&normalized)?;
+                self.journal.log_entry(&self.agent_id, "delete_file", &normalized, true, &result);
+                Ok(result)
             }
             _ => anyhow::bail!("Unhandled DEL tool: {}", del_tool_name),
         }

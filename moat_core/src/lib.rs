@@ -2,6 +2,7 @@
 pub mod capabilities;
 pub mod config;
 pub mod consent;
+pub mod execution;
 pub mod execution_plan;
 pub mod external_api;
 pub mod gateway;
