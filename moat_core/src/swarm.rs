@@ -434,6 +434,7 @@ fn permission_flags_for_intent(intent: &ActionIntent) -> PermissionFlags {
     match intent.action.as_str() {
         "fs:read" => PermissionFlags::FILE_READ,
         "fs:write" => PermissionFlags::FILE_WRITE,
+        "fs:delete" => PermissionFlags::FILE_DELETE,
         "net:curl" => PermissionFlags::NET_OUTBOUND,
         "os:open_url" => PermissionFlags::URL_OPEN,
         "app:launch" => PermissionFlags::APP_LAUNCH,

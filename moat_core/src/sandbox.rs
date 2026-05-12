@@ -399,6 +399,12 @@ impl WorkspaceCapability {
         self.dir.read_to_string(rel_path).map_err(SandboxError::Io)
     }
 
+    pub fn remove_file(&self, rel_path: &Path) -> Result<PathBuf> {
+        let abs = self.root.join(rel_path);
+        std::fs::remove_file(&abs).map_err(SandboxError::Io)?;
+        Ok(abs)
+    }
+
     pub fn atomic_write(&self, rel_path: &Path, data: &[u8]) -> Result<()> {
         let mut tmp_name = rel_path.as_os_str().to_owned();
         tmp_name.push(".tmp");

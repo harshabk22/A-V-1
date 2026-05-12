@@ -816,6 +816,9 @@ fn permission_flags_label(flags: PermissionFlags) -> String {
     if flags.contains(PermissionFlags::FILE_WRITE) {
         labels.push("write");
     }
+    if flags.contains(PermissionFlags::FILE_DELETE) {
+        labels.push("delete");
+    }
     if flags.contains(PermissionFlags::NET_OUTBOUND) {
         labels.push("network");
     }
@@ -1385,7 +1388,9 @@ impl WorkerAgent {
                 (PermissionFlags::FILE_READ, FileAccess::ReadOnly)
                 | (PermissionFlags::FILE_READ, FileAccess::ReadWrite)
                 | (PermissionFlags::FILE_WRITE, FileAccess::WriteOnly)
-                | (PermissionFlags::FILE_WRITE, FileAccess::ReadWrite) => Some(path.clone()),
+                | (PermissionFlags::FILE_WRITE, FileAccess::ReadWrite)
+                | (PermissionFlags::FILE_DELETE, FileAccess::WriteOnly)
+                | (PermissionFlags::FILE_DELETE, FileAccess::ReadWrite) => Some(path.clone()),
                 _ => None,
             })
             .collect()
@@ -1416,7 +1421,8 @@ impl WorkerAgent {
         authorize_path(
             target,
             &roots,
-            permission.contains(PermissionFlags::FILE_WRITE),
+            permission.contains(PermissionFlags::FILE_WRITE)
+                || permission.contains(PermissionFlags::FILE_DELETE),
         )
     }
 
@@ -1431,7 +1437,9 @@ impl WorkerAgent {
         {
             Ok(path) => Ok(path),
             Err(reason) => {
-                let grant_path = if permission.contains(PermissionFlags::FILE_WRITE) {
+                let grant_path = if permission.contains(PermissionFlags::FILE_WRITE)
+                    || permission.contains(PermissionFlags::FILE_DELETE)
+                {
                     Self::write_grant_scope(target)
                 } else {
                     target.to_string()
@@ -1741,6 +1749,7 @@ impl WorkerAgent {
         match intent.action.as_str() {
             "fs:read" => self.action_fs_read(intent).await,
             "fs:write" => self.action_fs_write(intent).await,
+            "fs:delete" => self.action_fs_delete(intent).await,
             "app:launch" => self.action_app_launch(intent).await,
             "process:spawn" => self.action_process_spawn(intent, root_node_id).await,
             "os:open_url" => self.action_os_open_url(intent).await,
@@ -2170,6 +2179,52 @@ impl WorkerAgent {
                     stderr: e.to_string(),
                 })
             }
+        }
+    }
+
+    async fn action_fs_delete(&self, intent: &ActionIntent) -> MoatResult<TaskStatus> {
+        let (relative_path, absolute_path) = match resolve_workspace_target(&intent.target) {
+            Ok(paths) => paths,
+            Err(reason) => {
+                return Ok(TaskStatus::Failed {
+                    exit_code: None,
+                    stderr: reason,
+                });
+            }
+        };
+
+        if let Err(reason) = self
+            .ensure_path_permission(
+                &absolute_path.to_string_lossy(),
+                PermissionFlags::FILE_DELETE,
+            )
+            .await
+        {
+            return Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: reason,
+            });
+        }
+
+        let capability = match WorkspaceCapability::open(&config::workspace_root()) {
+            Ok(cap) => cap,
+            Err(err) => {
+                let _ = cleanup_workspace_tmp_files();
+                return Ok(TaskStatus::Failed {
+                    exit_code: None,
+                    stderr: format!("Workspace capability open failed: {err}"),
+                });
+            }
+        };
+
+        match capability.remove_file(relative_path.as_path()) {
+            Ok(abs) => Ok(TaskStatus::Success {
+                stdout: format!("deleted {}", abs.display()),
+            }),
+            Err(e) => Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: e.to_string(),
+            }),
         }
     }
 

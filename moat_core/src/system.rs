@@ -1061,7 +1061,7 @@ impl MoatSystem {
             // Scoped write access for the workspace
             brain.grant_path_permission(
                 root_path,
-                PermissionFlags::FILE_READ | PermissionFlags::FILE_WRITE,
+                PermissionFlags::FILE_READ | PermissionFlags::FILE_WRITE | PermissionFlags::FILE_DELETE,
             )?;
             brain.snapshot()
         };

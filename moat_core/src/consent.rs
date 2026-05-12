@@ -382,6 +382,11 @@ pub fn build_human_summary(intent: &ActionIntent, agent_label: &str) -> String {
                 agent_label,
                 path.as_path().display()
             ),
+            IntentPayload::FileDelete { path } => format!(
+                "Agent '{}' requests to delete: {}",
+                agent_label,
+                path.as_path().display()
+            ),
             IntentPayload::ProcessSpawn { executable, args } => format!(
                 "Agent '{}' requests OS shell execution: `{} {}`",
                 agent_label,

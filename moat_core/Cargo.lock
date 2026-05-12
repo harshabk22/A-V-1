@@ -2280,6 +2280,7 @@ name = "moat_core"
 version = "0.1.0"
 dependencies = [
  "active-win-pos-rs",
+ "anyhow",
  "arboard",
  "async-trait",
  "base64 0.22.1",

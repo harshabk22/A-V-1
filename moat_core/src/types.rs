@@ -135,6 +135,9 @@ pub enum IntentPayload {
         path: WorkspacePath,
         contents: String,
     },
+    FileDelete {
+        path: WorkspacePath,
+    },
     AppLaunch {
         app_name: String,
     },
@@ -208,6 +211,9 @@ impl TypedIntent {
             "fs:write" => IntentPayload::FileWrite {
                 path: WorkspacePath::from_target(intent.target.trim())?,
                 contents: payload_as_string(intent.payload.as_ref()),
+            },
+            "fs:delete" => IntentPayload::FileDelete {
+                path: WorkspacePath::from_target(intent.target.trim())?,
             },
             "app:launch" => IntentPayload::AppLaunch {
                 app_name: intent.target.trim().to_string(),
