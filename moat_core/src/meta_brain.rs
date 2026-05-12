@@ -32,6 +32,7 @@ impl PermissionFlags {
     pub const NONE: Self = Self(0);
     pub const FILE_READ: Self = Self(1 << 0);
     pub const FILE_WRITE: Self = Self(1 << 1);
+    pub const FILE_DELETE: Self = Self(1 << 8);
     pub const NET_OUTBOUND: Self = Self(1 << 2);
     pub const NET_INBOUND: Self = Self(1 << 3);
     pub const EXEC: Self = Self(1 << 4);

@@ -25,6 +25,7 @@ pub mod shortcuts;
 pub mod skills;
 pub mod swarm;
 pub mod system;
+pub mod tools;
 pub mod trust_store;
 pub mod types;
 
