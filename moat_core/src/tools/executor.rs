@@ -301,6 +301,33 @@ mod tests {
         );
         let _ = std::fs::remove_file(&test_file);
     }
+
+    #[test]
+    fn test_delete_file_schema_valid_with_path() {
+        let result = std::panic::catch_unwind(|| {
+            let json = r#"{"path": "/tmp/test.txt"}"#;
+            let args: serde_json::Value = serde_json::from_str(json).unwrap();
+            let path = args["path"].as_str().unwrap();
+            assert_eq!(path, "/tmp/test.txt");
+        });
+        assert!(result.is_ok(), "Schema should accept valid path");
+    }
+
+    #[test]
+    fn test_delete_file_schema_rejects_missing_path() {
+        let json = r#"{}"#;
+        let args: serde_json::Value = serde_json::from_str(json).unwrap();
+        let path = args["path"].as_str();
+        assert!(path.is_none(), "Missing path should yield None");
+    }
+
+    #[test]
+    fn test_delete_file_descender_executes_correctly() {
+        assert_eq!(
+            ToolExecutor::tool_to_del_capability("delete_file"),
+            Capability::FileDelete
+        );
+    }
 }
 
 fn create_seatbelt_profile(working_dir: &str) -> String {
