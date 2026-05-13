@@ -51,4 +51,8 @@ tiktoken-rs = "0.11.0"
 
 [features]
 default = []
+
+[[bin]]
+name = "moat-core"
+path = "src/main.rs"
 whisper = ["whisper-rs"]
