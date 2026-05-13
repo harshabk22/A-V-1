@@ -43,11 +43,13 @@ arboard = "3"
 enigo = "0.1"
 active-win-pos-rs = "0.10"
 coreaudio-rs = { version = "0.14", features = ["audio_unit"] }
-whisper-rs = { version = "0.11", optional = true }
 tokio-tungstenite = "0.29.0"
 futures-util = "0.3.32"
 coreaudio-sys = "0.2.17"
 tiktoken-rs = "0.11.0"
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "limit"] }
 
 [features]
 default = []
@@ -55,4 +57,3 @@ default = []
 [[bin]]
 name = "moat-core"
 path = "src/main.rs"
-whisper = ["whisper-rs"]
