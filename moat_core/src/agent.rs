@@ -18,6 +18,35 @@ pub enum AgentResponse {
     Delegation { task: String, reason: String },
 }
 
+#[derive(Debug, Clone)]
+pub struct LoopConfig {
+    pub max_iterations: u32,
+    pub max_tool_calls: u32,
+    pub enable_progressive_disclosure: bool,
+}
+
+impl Default for LoopConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: 12,
+            max_tool_calls: 16,
+            enable_progressive_disclosure: true,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct LoopState {
+    pub iteration: u32,
+    pub tool_calls: u32,
+    pub last_tool_failed: bool,
+}
+
+enum AgentAction {
+    Respond(String),
+    UseTool { tool_name: String, args: serde_json::Value },
+}
+
 pub struct Agent1 {
     pub capabilities: CapabilitySet,
     context: ContextStore,
@@ -26,6 +55,8 @@ pub struct Agent1 {
     session_id: String,
     session_store: Arc<SessionStore>,
     profile_store: Arc<ProfileStore>,
+    loop_config: LoopConfig,
+    loop_state: LoopState,
 }
 
 impl Agent1 {
@@ -92,6 +123,8 @@ impl Agent1 {
             session_id,
             session_store,
             profile_store,
+            loop_config: LoopConfig::default(),
+            loop_state: LoopState::default(),
         })
     }
 
@@ -225,6 +258,8 @@ pub struct Agent2 {
     session_id: String,
     session_store: Arc<SessionStore>,
     profile_store: Arc<ProfileStore>,
+    loop_config: LoopConfig,
+    loop_state: LoopState,
 }
 
 impl Agent2 {
@@ -291,6 +326,8 @@ impl Agent2 {
             session_id,
             session_store,
             profile_store,
+            loop_config: LoopConfig::default(),
+            loop_state: LoopState::default(),
         })
     }
 
