@@ -19,10 +19,7 @@ use moat_core::gateway_transport::{
     GatewayTransportInboundFrame, GatewayWireResponse, GatewayWireTaskStatus,
 };
 use moat_core::orchestrator::{PlannerConfig, WorkerConfig};
-use moat_core::sentinel::{SentinelFault, SentinelRuleRecord, SentinelTriggerType};
-use moat_core::shortcuts::ShortcutRecord;
-use moat_core::system::{MemoryOverview, MoatSystem, MoatSystemConfig, VoiceStatus};
-use moat_core::voice::messages::{BrainToEar, BrainToMouth, EarToBrain};
+use moat_core::system::{MemoryOverview, MoatSystem, MoatSystemConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use reasoning_bridge::{ReasoningBridge, StepOutcomePayload};
@@ -150,19 +147,19 @@ async fn validate_nvidia_inference_request(
     ))
 }
 
-fn emit_background_fault(app: &tauri::AppHandle, fault: SentinelFault) {
+fn emit_background_fault(app: &tauri::AppHandle, severity: &str, subsystem: &str, message: &str, code: Option<&str>) {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let payload = serde_json::json!({
         "kind": "background_error",
-        "severity": fault.severity,
-        "subsystem": fault.subsystem,
-        "message": fault.message,
-        "trace_id": format!("sentinel:{}:{}", fault.code.as_deref().unwrap_or("event"), timestamp),
+        "severity": severity,
+        "subsystem": subsystem,
+        "message": message,
+        "trace_id": format!("{}:{}:{}", subsystem, code.unwrap_or("event"), timestamp),
         "timestamp": timestamp,
-        "code": fault.code,
+        "code": code,
     });
     let _ = app.emit("live-telemetry", payload.to_string());
 }
@@ -172,18 +169,10 @@ pub struct AppState {
     consent_bridge: Arc<ConsentBridge>,
     /// Scraped UI elements from the last hotkey press, used by os:click and os:type_text.
     ui_element_map: Arc<std::sync::Mutex<Vec<ui_scraper::ScrapedElement>>>,
-    /// Voice session control and owned actor tasks for the current voice session.
-    voice_session: Arc<AsyncMutex<Option<VoiceSessionControl>>>,
-    /// Boot-time voice preflight state shared with the UI.
-    voice_status: Arc<AsyncMutex<VoiceStatus>>,
     /// Gateway transport bind info for socket-based RPC from the desktop client.
     gateway_info: Arc<AsyncMutex<Option<GatewayServerInfo>>>,
     /// WASM reasoning engine and agent instances.
     reasoning: Arc<AsyncMutex<ReasoningBridge>>,
-}
-
-fn initial_voice_status() -> VoiceStatus {
-    MoatSystem::voice_preflight_status()
 }
 
 fn should_attach_active_ui_tree(task: &str) -> bool {
@@ -202,15 +191,6 @@ fn should_attach_active_ui_tree(task: &str) -> bool {
     ui_intent_markers.iter().any(|marker| query.contains(marker))
 }
 
-struct VoiceSessionControl {
-    ear_tx: tokio::sync::mpsc::Sender<EarToBrain>,
-    ear_control_tx: tokio::sync::mpsc::Sender<BrainToEar>,
-    mouth_tx: tokio::sync::mpsc::Sender<BrainToMouth>,
-    mouth_task: tokio::task::JoinHandle<()>,
-    brain_task: tokio::task::JoinHandle<()>,
-    ear_task: tokio::task::JoinHandle<()>,
-}
-
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExecuteTaskResponse {
@@ -218,68 +198,6 @@ struct ExecuteTaskResponse {
     total_tokens: u32,
     session_id: Option<String>,
     role: String,
-}
-
-impl VoiceSessionControl {
-    fn is_running(&self) -> bool {
-        !self.mouth_task.is_finished()
-            || !self.brain_task.is_finished()
-            || !self.ear_task.is_finished()
-    }
-
-    async fn shutdown(self) {
-        let _ = self.ear_tx.send(EarToBrain::Shutdown).await;
-        let _ = self.ear_control_tx.send(BrainToEar::Shutdown).await;
-        let _ = self.mouth_tx.send(BrainToMouth::Silence).await;
-        let _ = self.mouth_tx.send(BrainToMouth::SessionComplete).await;
-
-        finish_voice_task(self.ear_task).await;
-        finish_voice_task(self.brain_task).await;
-        finish_voice_task(self.mouth_task).await;
-    }
-}
-
-async fn finish_voice_task(mut handle: tokio::task::JoinHandle<()>) {
-    if tokio::time::timeout(Duration::from_millis(500), &mut handle)
-        .await
-        .is_err()
-    {
-        handle.abort();
-        let _ = handle.await;
-    }
-}
-
-#[cfg(feature = "whisper")]
-fn build_voice_stt_provider(
-    app: &tauri::AppHandle,
-) -> Result<Arc<dyn moat_core::voice::actor_ear::SttProvider>, String> {
-    match moat_core::voice::whisper_stt::LocalWhisperStt::new(None) {
-        Ok(whisper) => {
-            let _ = app.emit(
-                "live-telemetry",
-                "[VOICE] Whisper model loaded. Voice session starting...".to_string(),
-            );
-            Ok(Arc::new(whisper))
-        }
-        Err(err) => {
-            let message = format!(
-                "Voice mode requires a local Whisper model. {} Download ggml-base.en.bin to ~/.moatageex/models/ and restart voice mode.",
-                err
-            );
-            let _ = app.emit("live-telemetry", format!("[VOICE] {}", message));
-            Err(message)
-        }
-    }
-}
-
-#[cfg(not(feature = "whisper"))]
-fn build_voice_stt_provider(
-    app: &tauri::AppHandle,
-) -> Result<Arc<dyn moat_core::voice::actor_ear::SttProvider>, String> {
-    let message =
-        "Voice mode requires Whisper STT support. Rebuild the Tauri app with the `whisper` feature enabled.".to_string();
-    let _ = app.emit("live-telemetry", format!("[VOICE] {}", message));
-    Err(message)
 }
 
 async fn forward_status_channel(app: tauri::AppHandle) -> tokio::sync::mpsc::Sender<String> {
@@ -980,11 +898,6 @@ async fn get_settings(state: tauri::State<'_, AppState>) -> Result<SettingsState
 }
 
 #[tauri::command]
-async fn check_voice_status(state: tauri::State<'_, AppState>) -> Result<VoiceStatus, String> {
-    Ok(state.voice_status.lock().await.clone())
-}
-
-#[tauri::command]
 async fn get_gateway_server_info(
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<GatewayServerInfo>, String> {
@@ -1015,242 +928,6 @@ async fn update_user_config(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     save_settings(update, state).await
-}
-
-#[tauri::command]
-async fn list_shortcuts(state: tauri::State<'_, AppState>) -> Result<Vec<ShortcutRecord>, String> {
-    let kernel = state
-        .kernel
-        .lock()
-        .await
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| KERNEL_BOOTING_ERROR.to_string())?;
-    kernel
-        .list_shortcuts()
-        .await
-        .map_err(|e| format!("Failed to list shortcuts: {}", e))
-}
-
-#[tauri::command]
-async fn save_shortcut(
-    trigger_name: String,
-    workflow_json: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    let kernel = state
-        .kernel
-        .lock()
-        .await
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| KERNEL_BOOTING_ERROR.to_string())?;
-    kernel
-        .save_shortcut(&trigger_name, &workflow_json)
-        .await
-        .map_err(|e| format!("Failed to save shortcut: {}", e))
-}
-
-#[tauri::command]
-async fn delete_shortcut(
-    trigger_name: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    let kernel = state
-        .kernel
-        .lock()
-        .await
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| KERNEL_BOOTING_ERROR.to_string())?;
-    kernel
-        .delete_shortcut(&trigger_name)
-        .await
-        .map_err(|e| format!("Failed to delete shortcut: {}", e))
-}
-
-#[tauri::command]
-async fn list_sentinel_rules(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<SentinelRuleRecord>, String> {
-    let kernel = state
-        .kernel
-        .lock()
-        .await
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| KERNEL_BOOTING_ERROR.to_string())?;
-    kernel
-        .list_sentinel_rules()
-        .await
-        .map_err(|e| format!("Failed to list sentinel rules: {}", e))
-}
-
-#[tauri::command]
-async fn add_sentinel_rule(
-    trigger_type: SentinelTriggerType,
-    trigger_config: String,
-    target_shortcut: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<SentinelRuleRecord, String> {
-    let kernel = state
-        .kernel
-        .lock()
-        .await
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| KERNEL_BOOTING_ERROR.to_string())?;
-    kernel
-        .add_sentinel_rule(trigger_type, &trigger_config, &target_shortcut)
-        .await
-        .map_err(|e| format!("Failed to add sentinel rule: {}", e))
-}
-
-#[tauri::command]
-async fn toggle_sentinel_rule(
-    rule_id: String,
-    is_active: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    let kernel = state
-        .kernel
-        .lock()
-        .await
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| KERNEL_BOOTING_ERROR.to_string())?;
-    kernel
-        .toggle_sentinel_rule(&rule_id, is_active)
-        .await
-        .map_err(|e| format!("Failed to toggle sentinel rule: {}", e))
-}
-
-#[tauri::command]
-async fn delete_sentinel_rule(
-    rule_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    let kernel = state
-        .kernel
-        .lock()
-        .await
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| KERNEL_BOOTING_ERROR.to_string())?;
-    kernel
-        .delete_sentinel_rule(&rule_id)
-        .await
-        .map_err(|e| format!("Failed to delete sentinel rule: {}", e))
-}
-
-#[tauri::command]
-async fn start_voice_session(
-    state: tauri::State<'_, AppState>,
-    app: tauri::AppHandle,
-) -> Result<String, String> {
-    use moat_core::voice::actor_brain::BrainActor;
-    use moat_core::voice::actor_ear::EarActor;
-    use moat_core::voice::actor_mouth::MouthActor;
-
-    let voice_status = state.voice_status.lock().await.clone();
-    if !voice_status.voice_enabled {
-        return Err(
-            voice_status
-                .reason
-                .unwrap_or_else(|| "Voice subsystem is unavailable.".to_string()),
-        );
-    }
-
-    // Check if a voice session is already running
-    {
-        let mut guard = state.voice_session.lock().await;
-        if guard.as_ref().is_some_and(VoiceSessionControl::is_running) {
-            return Err("Voice session is already active.".into());
-        }
-        if guard.is_some() {
-            *guard = None;
-        }
-    }
-
-    let kernel = state
-        .kernel
-        .lock()
-        .await
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| KERNEL_BOOTING_ERROR.to_string())?;
-
-    let stt_provider = build_voice_stt_provider(&app)?;
-
-    // ── Create telemetry channel for UI events ──
-    let telemetry_tx = forward_status_channel(app.clone()).await;
-
-    // ── Boot the Mouth Actor ──
-    let (mouth_actor, mouth_tx) = MouthActor::new(16);
-
-    // ── Boot the Brain Actor ──
-    let (brain_actor, ear_tx, ear_control_tx, ear_control_rx) = BrainActor::new(
-        Arc::clone(&kernel),
-        mouth_tx.clone(),
-        16,  // ear_buffer
-        8,   // ear_control_buffer
-        Some(telemetry_tx),
-    );
-
-    // ── Boot the Ear Actor ──
-    let ear_actor = EarActor::new(ear_tx.clone(), ear_control_rx, stt_provider);
-
-    // ── Spawn all 3 actors as concurrent tasks ──
-    let mouth_task = tokio::spawn(async move {
-        mouth_actor.run().await;
-    });
-    let brain_task = tokio::spawn(async move {
-        brain_actor.run().await;
-    });
-    let ear_task = tokio::spawn(async move {
-        ear_actor.run().await;
-    });
-
-    {
-        let mut guard = state.voice_session.lock().await;
-        *guard = Some(VoiceSessionControl {
-            ear_tx,
-            ear_control_tx,
-            mouth_tx,
-            mouth_task,
-            brain_task,
-            ear_task,
-        });
-    }
-
-    let _ = app.emit(
-        "live-telemetry",
-        "[VOICE] Tri-Actor voice session started. Listening...".to_string(),
-    );
-
-    Ok("Voice session started.".into())
-}
-
-#[tauri::command]
-async fn stop_voice_session(
-    state: tauri::State<'_, AppState>,
-    app: tauri::AppHandle,
-) -> Result<String, String> {
-    let session = {
-        let mut guard = state.voice_session.lock().await;
-        guard.take()
-    };
-    match session {
-        Some(control) => {
-            control.shutdown().await;
-            let _ = app.emit(
-                "live-telemetry",
-                "[VOICE] Voice session stopped.".to_string(),
-            );
-            Ok("Voice session stopped.".into())
-        }
-        None => Err("No active voice session to stop.".into()),
-    }
 }
 
 #[tauri::command]
@@ -1396,7 +1073,6 @@ pub fn run() {
                 }
             })));
             let kernel = Arc::new(AsyncMutex::new(None));
-            let voice_status = Arc::new(AsyncMutex::new(initial_voice_status()));
             let gateway_info = Arc::new(AsyncMutex::new(None));
             let gateway_stream_running = Arc::new(AtomicBool::new(false));
 
@@ -1450,8 +1126,6 @@ pub fn run() {
                 kernel: Arc::clone(&kernel),
                 consent_bridge: Arc::clone(&consent_bridge),
                 ui_element_map: Arc::clone(&ui_element_map),
-                voice_session: Arc::new(AsyncMutex::new(None)),
-                voice_status: Arc::clone(&voice_status),
                 gateway_info: Arc::clone(&gateway_info),
                 reasoning: Arc::clone(&reasoning_bridge),
             });
@@ -1470,18 +1144,26 @@ pub fn run() {
                 {
                     Ok(kernel_instance) => {
                         let kernel_instance = Arc::new(kernel_instance);
-                        let seed_test = cfg!(debug_assertions)
-                            || std::env::var("MOAT_SEED_TEST_ENV").as_deref() == Ok("1");
-                        let seed_result = if seed_test {
-                            kernel_instance.seed_test_environment().await
-                        } else if let Ok(path) = std::env::var("MOAT_BOOTSTRAP_ROOT") {
-                            if path.trim().is_empty() {
-                                Ok(())
-                            } else {
-                                kernel_instance.seed_root_environment(path.trim()).await
+                        let seed_result = {
+                            #[cfg(debug_assertions)]
+                            {
+                                let seed_test = std::env::var("MOAT_SEED_TEST_ENV").as_deref() == Ok("1");
+                                if seed_test {
+                                    kernel_instance.seed_test_environment().await
+                                } else if let Ok(path) = std::env::var("MOAT_BOOTSTRAP_ROOT") {
+                                    if path.trim().is_empty() {
+                                        Ok(())
+                                    } else {
+                                        kernel_instance.seed_root_environment(path.trim()).await
+                                    }
+                                } else {
+                                    Ok(())
+                                }
                             }
-                        } else {
-                            Ok(())
+                            #[cfg(not(debug_assertions))]
+                            {
+                                Ok(())
+                            }
                         };
 
                         if let Err(err) = seed_result {
@@ -1508,75 +1190,17 @@ pub fn run() {
                                 *gateway_info.lock().await = None;
                                 emit_background_fault(
                                     &app_handle,
-                                    SentinelFault {
-                                        severity: "error".into(),
-                                        subsystem: "gateway_transport".into(),
-                                        message: err.to_string(),
-                                        code: Some("GATEWAY_TRANSPORT_START_FAILED".into()),
-                                    },
+                                    "error",
+                                    "gateway_transport",
+                                    &err.to_string(),
+                                    Some("GATEWAY_TRANSPORT_START_FAILED"),
                                 );
                             }
-                        }
-
-                        if let Err(err) = kernel_instance
-                            .start_sentinel(
-                                Arc::new({
-                                    let kernel = Arc::clone(&kernel_instance);
-                                    let app = app_handle.clone();
-                                    move |trigger: String| {
-                                        let kernel = Arc::clone(&kernel);
-                                        let app = app.clone();
-                                        tauri::async_runtime::spawn(async move {
-                                            let tx = forward_status_channel(app.clone()).await;
-                                            let _ = tx
-                                                .send(format!(
-                                                    "Sentinel: Triggering shortcut {}...",
-                                                    trigger
-                                                ))
-                                                .await;
-                                            let _ = kernel
-                                                .process_with_source(
-                                                    &trigger,
-                                                    0,
-                                                    Some(tx),
-                                                    SessionSource::Automation,
-                                                    Some("sentinel"),
-                                                )
-                                                .await;
-                                        });
-                                    }
-                                }),
-                                Arc::new({
-                                    let app = app_handle.clone();
-                                    move |fault: SentinelFault| {
-                                        emit_background_fault(&app, fault);
-                                    }
-                                }),
-                            )
-                            .await
-                        {
-                            emit_background_fault(
-                                &app_handle,
-                                SentinelFault {
-                                    severity: "error".into(),
-                                    subsystem: "sentinel".into(),
-                                    message: err.to_string(),
-                                    code: Some("SENTINEL_START_FAILED".into()),
-                                },
-                            );
                         }
 
                         let mut slot = kernel.lock().await;
                         *slot = Some(kernel_instance);
                         drop(slot);
-
-                        if let Some(state) = app_handle.try_state::<AppState>() {
-                            let kernel = state.kernel.lock().await;
-                            if let Some(kernel) = kernel.as_ref() {
-                                let mut voice_guard = state.voice_status.lock().await;
-                                *voice_guard = kernel.voice_status();
-                            }
-                        }
 
                         if let Err(err) = app_handle.emit(KERNEL_READY_EVENT_NAME, ()) {
                             eprintln!("[KernelBoot] ready emit failed: {err}");
@@ -1599,19 +1223,9 @@ pub fn run() {
             delete_knowledge_memory,
             nuke_database,
             get_settings,
-            check_voice_status,
             get_gateway_server_info,
             save_settings,
             update_user_config,
-            list_shortcuts,
-            save_shortcut,
-            delete_shortcut,
-            list_sentinel_rules,
-            add_sentinel_rule,
-            toggle_sentinel_rule,
-            delete_sentinel_rule,
-            start_voice_session,
-            stop_voice_session,
             resolve_choice,
             fetch_nvidia_models,
             validate_nvidia_inference,

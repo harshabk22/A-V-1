@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::config::{self, SettingsState, SettingsUpdate, UserFrontmatter};
 use crate::consent::ConsentBridge;
-use crate::execution_plan::{validate_execution_plan, ExecutionPlan, WorkerDescriptor};
+use crate::execution_plan::WorkerDescriptor;
 use crate::external_api::{ExternalApiConfig, ExternalProviderFactory, ProviderFactory};
 use crate::gateway::{
     self, GatewayControlPlane, GatewayMessageRecord, GatewayRpcRequest, GatewayRpcResponse,
@@ -30,18 +30,6 @@ use crate::orchestrator::{
 
 use crate::plugins::ensure_plugins_vault;
 use crate::rule_store;
-use crate::sentinel::{
-    add_sentinel_rule as add_sentinel_rule_record,
-    delete_sentinel_rule as delete_sentinel_rule_record,
-    list_sentinel_rules as list_sentinel_rule_records, prepare_sentinel_table,
-    toggle_sentinel_rule as toggle_sentinel_rule_record, SentinelDaemon, SentinelFault,
-    SentinelRuleRecord, SentinelTriggerType,
-};
-use crate::shortcuts::{
-    delete_shortcut as delete_shortcut_record, list_shortcuts as list_shortcut_records,
-    load_shortcut_plan, materialize_runtime_plan, normalize_trigger_name, prepare_shortcut_table,
-    save_shortcut as save_shortcut_record, ShortcutRecord,
-};
 use crate::skills::{ensure_skills_vault, prepare_skills_table};
 use crate::swarm::{SwarmGateway, Workspace};
 use crate::trust_store::TrustStore;
@@ -60,14 +48,6 @@ enum SessionFastPath {
     DirectChat,
     Specialist(&'static str),
     Assistant,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceStatus {
-    pub voice_enabled: bool,
-    pub reason: Option<String>,
-    pub model_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -310,7 +290,6 @@ mod tests {
             },
         ));
 
-        let sentinel = Arc::new(crate::sentinel::SentinelDaemon::new(Arc::clone(&db)));
         let gateway = Arc::new(GatewayControlPlane::default());
         let gateway_server = Arc::new(GatewayServer::with_default_adapters(Arc::clone(&gateway)));
         let system = MoatSystem {
@@ -332,12 +311,10 @@ mod tests {
                 max_tokens: 128,
             },
             trust_store,
-            sentinel,
             swarm_workspace_root: None,
             default_swarm_agent_preference: None,
             swarm_gateway: Arc::new(AsyncRwLock::new(None)),
             default_swarm_agent: Arc::new(AsyncRwLock::new(None)),
-            voice_status: MoatSystem::voice_preflight_status(),
         };
 
         system.hard_reset_memory().await.expect("hard reset");
@@ -441,7 +418,7 @@ mod tests {
 
 fn gateway_role_for_source(source: SessionSource) -> gateway::GatewayClientRole {
     match source {
-        SessionSource::DesktopUi | SessionSource::CommandBar | SessionSource::Voice => {
+        SessionSource::DesktopUi | SessionSource::CommandBar => {
             gateway::GatewayClientRole::DesktopClient
         }
         SessionSource::WebChat => gateway::GatewayClientRole::WebChatClient,
@@ -630,12 +607,10 @@ pub struct MoatSystem {
     planner_defaults: PlannerConfig,
     trust_store: Arc<TrustStore>,
 
-    sentinel: Arc<SentinelDaemon>,
     swarm_workspace_root: Option<PathBuf>,
     default_swarm_agent_preference: Option<String>,
     pub swarm_gateway: Arc<AsyncRwLock<Option<Arc<SwarmGateway>>>>,
     pub default_swarm_agent: Arc<AsyncRwLock<Option<String>>>,
-    voice_status: VoiceStatus,
 }
 
 impl MoatSystem {
@@ -658,47 +633,6 @@ impl MoatSystem {
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    pub fn voice_preflight_status() -> VoiceStatus {
-        let model_path = config::voice_model_path();
-        let model_path_str = model_path.display().to_string();
-
-        if !cfg!(feature = "whisper") {
-            eprintln!(
-                "[VOICE PREFLIGHT FAILED]: Whisper feature not enabled in this build. Voice commands will be disabled."
-            );
-            return VoiceStatus {
-                voice_enabled: false,
-                reason: Some(
-                    "Whisper feature not enabled in this build. Rebuild with voice support."
-                        .to_string(),
-                ),
-                model_path: model_path_str,
-            };
-        }
-
-        if !model_path.is_file() {
-            eprintln!(
-                "[VOICE PREFLIGHT FAILED]: ggml-base.en.bin not found. Voice commands will be disabled. Expected at {}",
-                model_path.display()
-            );
-            return VoiceStatus {
-                voice_enabled: false,
-                reason: Some("Whisper model missing. Check terminal.".to_string()),
-                model_path: model_path_str,
-            };
-        }
-
-        VoiceStatus {
-            voice_enabled: true,
-            reason: None,
-            model_path: model_path_str,
-        }
-    }
-
-    pub fn voice_status(&self) -> VoiceStatus {
-        self.voice_status.clone()
     }
 
     fn clip_text(text: &str, max_chars: usize) -> String {
@@ -852,7 +786,6 @@ impl MoatSystem {
 
         ensure_skills_vault()?;
         ensure_plugins_vault()?;
-        let voice_status = Self::voice_preflight_status();
         let gateway = Arc::new(GatewayControlPlane::default());
         let gateway_server = Arc::new(GatewayServer::with_default_adapters(Arc::clone(&gateway)));
         gateway_server.load_trusted_devices(&conn)?;
@@ -951,7 +884,6 @@ impl MoatSystem {
                 trust_store.register_builtin_worker(&spec.name);
             }
         }
-        let sentinel = Arc::new(SentinelDaemon::new(Arc::clone(&db)));
 
         Ok(Self {
             meta_brain,
@@ -968,12 +900,10 @@ impl MoatSystem {
             memory_max_chars: injector_config.max_memory_chars,
             planner_defaults,
             trust_store,
-            sentinel,
             swarm_workspace_root,
             default_swarm_agent_preference: cfg.default_swarm_agent,
             swarm_gateway: Arc::new(AsyncRwLock::new(swarm_gateway)),
             default_swarm_agent: Arc::new(AsyncRwLock::new(default_swarm_agent)),
-            voice_status,
         })
     }
 
@@ -1008,8 +938,6 @@ impl MoatSystem {
         prepare_policy_table(conn)?;
         rule_store::prepare_tables(conn)?;
         prepare_skills_table(conn)?;
-        prepare_shortcut_table(conn)?;
-        prepare_sentinel_table(conn)?;
 
         Ok(())
     }
@@ -1036,6 +964,7 @@ impl MoatSystem {
         Ok(())
     }
 
+    #[cfg(debug_assertions)]
     pub async fn seed_root_environment(&self, root_path: &str) -> MoatResult<()> {
         let snapshot = {
             let mut brain = self.meta_brain.write().await;
@@ -1069,6 +998,7 @@ impl MoatSystem {
         MetaBrain::flush_arc(Arc::clone(&self.meta_brain)).await
     }
 
+    #[cfg(debug_assertions)]
     pub async fn seed_test_environment(&self) -> MoatResult<()> {
         let default_root = std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("/"))
@@ -1590,80 +1520,6 @@ impl MoatSystem {
         result
     }
 
-    pub async fn start_sentinel(
-        self: &Arc<Self>,
-        on_trigger: Arc<dyn Fn(String) + Send + Sync>,
-        on_fault: Arc<dyn Fn(SentinelFault) + Send + Sync>,
-    ) -> MoatResult<()> {
-        self.sentinel.start(on_trigger, on_fault).await
-    }
-
-    pub async fn list_shortcuts(&self) -> MoatResult<Vec<ShortcutRecord>> {
-        let db = self.db.lock().await;
-        list_shortcut_records(&db)
-    }
-
-    pub async fn save_shortcut(&self, trigger_name: &str, workflow_json: &str) -> MoatResult<()> {
-        let trigger_name = normalize_trigger_name(trigger_name)?;
-        let plan: ExecutionPlan = serde_json::from_str(workflow_json).map_err(|err| {
-            MoatError::Settings(format!(
-                "shortcut '{}' workflow JSON is invalid: {err}",
-                trigger_name
-            ))
-        })?;
-        self.validate_shortcut_plan(&plan).await?;
-        let canonical = serde_json::to_string(&plan).map_err(MoatError::Serde)?;
-        let db = self.db.lock().await;
-        save_shortcut_record(&db, &trigger_name, &canonical)
-    }
-
-    pub async fn delete_shortcut(&self, trigger_name: &str) -> MoatResult<()> {
-        let db = self.db.lock().await;
-        delete_shortcut_record(&db, trigger_name)
-    }
-
-    pub async fn list_sentinel_rules(&self) -> MoatResult<Vec<SentinelRuleRecord>> {
-        let db = self.db.lock().await;
-        list_sentinel_rule_records(&db)
-    }
-
-    pub async fn add_sentinel_rule(
-        &self,
-        trigger_type: SentinelTriggerType,
-        trigger_config: &str,
-        target_shortcut: &str,
-    ) -> MoatResult<SentinelRuleRecord> {
-        {
-            let db = self.db.lock().await;
-            normalize_trigger_name(target_shortcut)?;
-            let _ = load_shortcut_plan(&db, target_shortcut)?.ok_or_else(|| {
-                MoatError::Settings(format!(
-                    "target shortcut '{}' does not exist",
-                    target_shortcut.trim()
-                ))
-            })?;
-            let record =
-                add_sentinel_rule_record(&db, trigger_type, trigger_config, target_shortcut)?;
-            drop(db);
-            self.sentinel.reload().await?;
-            return Ok(record);
-        }
-    }
-
-    pub async fn toggle_sentinel_rule(&self, rule_id: &str, is_active: bool) -> MoatResult<()> {
-        let db = self.db.lock().await;
-        toggle_sentinel_rule_record(&db, rule_id, is_active)?;
-        drop(db);
-        self.sentinel.reload().await
-    }
-
-    pub async fn delete_sentinel_rule(&self, rule_id: &str) -> MoatResult<()> {
-        let db = self.db.lock().await;
-        delete_sentinel_rule_record(&db, rule_id)?;
-        drop(db);
-        self.sentinel.reload().await
-    }
-
     async fn worker_descriptors(&self) -> MoatResult<Vec<WorkerDescriptor>> {
         let gateway = self.swarm_gateway.read().await.clone();
         if let Some(gateway) = gateway {
@@ -1709,86 +1565,6 @@ impl MoatSystem {
             description: "Fallback primary worker for action tasks.".into(),
             effective_capabilities: vec!["tool:read_only".into()],
         }])
-    }
-
-    async fn validate_shortcut_plan(&self, plan: &ExecutionPlan) -> MoatResult<()> {
-        let workers = self.worker_descriptors().await?;
-        validate_execution_plan(plan, &workers)
-            .map_err(|err| MoatError::Settings(format!("shortcut workflow is invalid: {err}")))?;
-        Ok(())
-    }
-
-    async fn resolve_shortcut_plan(
-        &self,
-        user_query: &str,
-    ) -> MoatResult<Option<(String, ExecutionPlan)>> {
-        let trigger = user_query.trim();
-        if !trigger.starts_with('/') {
-            return Ok(None);
-        }
-        let db = self.db.lock().await;
-        let Some(plan) = load_shortcut_plan(&db, trigger)? else {
-            return Ok(None);
-        };
-        drop(db);
-        self.validate_shortcut_plan(&plan).await?;
-        Ok(Some((trigger.to_string(), materialize_runtime_plan(plan))))
-    }
-
-    fn render_shortcut_execution_context(trigger_name: &str, plan: &ExecutionPlan) -> String {
-        let mut lines = vec![
-            format!("Shortcut trigger: {trigger_name}"),
-            format!("Shared objective: {}", plan.global_context.trim()),
-            "Execute the following precompiled workflow faithfully. Preserve dependency order when required, but answer directly if the workflow can now be completed more simply.".to_string(),
-        ];
-        for (index, task) in plan.tasks.iter().enumerate() {
-            let depends = if task.depends_on.is_empty() {
-                "none".to_string()
-            } else {
-                task.depends_on.join(", ")
-            };
-            lines.push(format!(
-                "{}. worker={} task_id={} depends_on={} instructions={}",
-                index + 1,
-                task.assigned_worker,
-                task.task_id,
-                depends,
-                task.instructions.trim()
-            ));
-        }
-        lines.join("\n")
-    }
-
-    async fn execute_shortcut_via_session_agent(
-        &self,
-        trigger_name: &str,
-        plan: ExecutionPlan,
-        root_node_id: NodeId,
-        session_id: Uuid,
-        status_tx: Option<Sender<String>>,
-    ) -> MoatResult<Vec<SubTaskResult>> {
-        let shortcut_context = Self::render_shortcut_execution_context(trigger_name, &plan);
-        let session_context = self.gateway.session_prompt_context(session_id);
-        let gateway_hits = self.search_gateway_messages(trigger_name, 4).await?;
-
-        if let Some(results) = self
-            .execute_authoritative_session_agent(
-                trigger_name,
-                root_node_id,
-                status_tx.clone(),
-                None,
-                session_context.as_deref(),
-                &gateway_hits,
-                Some(&shortcut_context),
-            )
-            .await?
-        {
-            return Ok(results);
-        }
-        Err(MoatError::Orchestrator(
-            "shortcut workflow requires the authoritative assistant, but no assistant is available"
-                .into(),
-        ))
     }
 
     fn classify_session_fast_path(user_query: &str, source: SessionSource) -> SessionFastPath {
@@ -1913,29 +1689,6 @@ impl MoatSystem {
         session_id: Uuid,
         source: SessionSource,
     ) -> MoatResult<Vec<SubTaskResult>> {
-        if let Some((trigger_name, plan)) = self.resolve_shortcut_plan(user_query).await? {
-            if let Some(tx) = &status_tx {
-                let _ = tx
-                    .send(format!(
-                        "Shortcut: Loaded precompiled workflow for '{}' and routed it through the session assistant.",
-                        trigger_name
-                    ))
-                    .await;
-            }
-            let results = self
-                .execute_shortcut_via_session_agent(
-                    &trigger_name,
-                    plan,
-                    root_node_id,
-                    session_id,
-                    status_tx.clone(),
-                )
-                .await?;
-            self.persist_result_turn("shortcut", user_query, &results, session_id, None)
-                .await?;
-            return Ok(results);
-        }
-
         let session_context = self.gateway.session_prompt_context(session_id);
         let specialization_hint = Self::authoritative_specialization_hint(user_query, source);
 
