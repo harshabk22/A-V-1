@@ -14,26 +14,19 @@ async fn main() -> anyhow::Result<()> {
     println!("── System ready ──────────────────────────────");
     println!("Waiting for your input...\n");
 
-    let mut session_used = false;
-
     loop {
-        if session_used {
-            print!("\n>> ");
-        } else {
-            print!(">> ");
-            session_used = true;
-        }
+        print!(">> ");
         io::stdout().flush()?;
 
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
-        let input = input.trim().to_string();
+        let line = input.trim().to_string();
 
-        if input.is_empty() {
+        if line.is_empty() {
             continue;
         }
 
-        match input.as_str() {
+        match line.as_str() {
             "/quit" => {
                 println!("\nGoodbye.");
                 break;
@@ -63,9 +56,24 @@ async fn main() -> anyhow::Result<()> {
             _ => {}
         }
 
-        match system.process_user_query(&input).await {
-            Ok(response) => println!("{}", response),
-            Err(e) => println!("System error: {}", e),
+        // Handle multi-line paste: split on lines starting with "> "
+        let queries: Vec<&str> = if line.contains("\n> ") {
+            line.split("\n> ")
+                .map(|s| s.trim().trim_start_matches('>').trim())
+                .filter(|s| !s.is_empty())
+                .collect()
+        } else {
+            let cleaned = line.trim_start_matches('>').trim();
+            if cleaned.is_empty() { continue; }
+            vec![cleaned]
+        };
+
+        for query in queries {
+            println!("\n── Query ────────────────────────────────────");
+            match system.process_user_query(query).await {
+                Ok(response) => println!("{}", response),
+                Err(e) => println!("System error: {}", e),
+            }
         }
     }
 

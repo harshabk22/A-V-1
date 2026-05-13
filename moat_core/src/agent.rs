@@ -40,6 +40,9 @@ pub struct LoopState {
     pub iteration: u32,
     pub tool_calls: u32,
     pub last_tool_failed: bool,
+    pub last_failed_tool: String,
+    pub last_failed_args: String,
+    pub consecutive_identical_failures: u32,
 }
 
 enum AgentAction {
@@ -156,6 +159,24 @@ impl Agent1 {
             Ok(output) => {
                 if output.contains("DENIED") || output.contains("No permission") {
                     self.loop_state.last_tool_failed = true;
+                    let same_as_last = self.loop_state.last_failed_tool == tool_name
+                        && self.loop_state.last_failed_args == args_json;
+                    if same_as_last {
+                        self.loop_state.consecutive_identical_failures += 1;
+                    } else {
+                        self.loop_state.consecutive_identical_failures = 1;
+                    }
+                    self.loop_state.last_failed_tool = tool_name.to_string();
+                    self.loop_state.last_failed_args = args_json.to_string();
+
+                    if self.loop_state.consecutive_identical_failures >= 3 {
+                        return Ok(format!(
+                            "[LOOP_STOP] Tool '{}' has been denied 3 times consecutively. \
+                            STOP retrying. Explain the situation to the user and wait for guidance.",
+                            tool_name
+                        ));
+                    }
+
                     let wrapped = format!(
                         "[TOOL_DENIED] Tool '{}' was denied: {}. \
                         Do NOT retry this exact call. Explain what was blocked \
@@ -165,10 +186,36 @@ impl Agent1 {
                     return Ok(wrapped);
                 }
                 self.loop_state.last_tool_failed = false;
-                Ok(output)
+                self.loop_state.consecutive_identical_failures = 0;
+                let hint = if tool_name == "fs_write" || tool_name == "write_file" {
+                    format!("{}\n[TASK_COMPLETE] File written successfully.", output)
+                } else if tool_name == "fs_delete" || tool_name == "delete_file" {
+                    format!("{}\n[TASK_COMPLETE] File deleted successfully.", output)
+                } else {
+                    output
+                };
+                Ok(hint)
             }
             Err(e) => {
                 self.loop_state.last_tool_failed = true;
+                let same_as_last = self.loop_state.last_failed_tool == tool_name
+                    && self.loop_state.last_failed_args == args_json;
+                if same_as_last {
+                    self.loop_state.consecutive_identical_failures += 1;
+                } else {
+                    self.loop_state.consecutive_identical_failures = 1;
+                }
+                self.loop_state.last_failed_tool = tool_name.to_string();
+                self.loop_state.last_failed_args = args_json.to_string();
+
+                if self.loop_state.consecutive_identical_failures >= 3 {
+                    return Ok(format!(
+                        "[LOOP_STOP] Tool '{}' has failed 3 times consecutively. \
+                        STOP retrying. Explain the situation and move on.",
+                        tool_name
+                    ));
+                }
+
                 let wrapped = format!(
                     "[TOOL_ERROR] Tool '{}' failed with error: {}. \
                     Do NOT retry the same call blindly. Consider alternative strategies.",
@@ -270,6 +317,12 @@ impl Agent1 {
                         &tool_call.function.arguments,
                         tool_executor,
                     ).await?;
+
+                    if tool_result.starts_with("[LOOP_STOP]") {
+                        llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
+                        self.context.append(Message::tool(&tool_result))?;
+                        return Ok(AgentResponse::Text(tool_result));
+                    }
 
                     llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
                     self.context.append(Message::tool(&tool_result))?;
@@ -451,6 +504,24 @@ impl Agent2 {
             Ok(output) => {
                 if output.contains("DENIED") || output.contains("No permission") {
                     self.loop_state.last_tool_failed = true;
+                    let same_as_last = self.loop_state.last_failed_tool == tool_name
+                        && self.loop_state.last_failed_args == args_json;
+                    if same_as_last {
+                        self.loop_state.consecutive_identical_failures += 1;
+                    } else {
+                        self.loop_state.consecutive_identical_failures = 1;
+                    }
+                    self.loop_state.last_failed_tool = tool_name.to_string();
+                    self.loop_state.last_failed_args = args_json.to_string();
+
+                    if self.loop_state.consecutive_identical_failures >= 3 {
+                        return Ok(format!(
+                            "[LOOP_STOP] Tool '{}' has been denied 3 times consecutively. \
+                            STOP retrying. Explain the situation to the user and wait for guidance.",
+                            tool_name
+                        ));
+                    }
+
                     let wrapped = format!(
                         "[TOOL_DENIED] Tool '{}' was denied: {}. \
                         Do NOT retry this exact call. Explain what was blocked \
@@ -460,10 +531,36 @@ impl Agent2 {
                     return Ok(wrapped);
                 }
                 self.loop_state.last_tool_failed = false;
-                Ok(output)
+                self.loop_state.consecutive_identical_failures = 0;
+                let hint = if tool_name == "fs_write" || tool_name == "write_file" {
+                    format!("{}\n[TASK_COMPLETE] File written successfully.", output)
+                } else if tool_name == "fs_delete" || tool_name == "delete_file" {
+                    format!("{}\n[TASK_COMPLETE] File deleted successfully.", output)
+                } else {
+                    output
+                };
+                Ok(hint)
             }
             Err(e) => {
                 self.loop_state.last_tool_failed = true;
+                let same_as_last = self.loop_state.last_failed_tool == tool_name
+                    && self.loop_state.last_failed_args == args_json;
+                if same_as_last {
+                    self.loop_state.consecutive_identical_failures += 1;
+                } else {
+                    self.loop_state.consecutive_identical_failures = 1;
+                }
+                self.loop_state.last_failed_tool = tool_name.to_string();
+                self.loop_state.last_failed_args = args_json.to_string();
+
+                if self.loop_state.consecutive_identical_failures >= 3 {
+                    return Ok(format!(
+                        "[LOOP_STOP] Tool '{}' has failed 3 times consecutively. \
+                        STOP retrying. Explain the situation and move on.",
+                        tool_name
+                    ));
+                }
+
                 let wrapped = format!(
                     "[TOOL_ERROR] Tool '{}' failed with error: {}. \
                     Do NOT retry the same call blindly. Consider alternative strategies.",
@@ -556,6 +653,12 @@ impl Agent2 {
                         &tool_call.function.arguments,
                         tool_executor,
                     ).await?;
+
+                    if tool_result.starts_with("[LOOP_STOP]") {
+                        llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
+                        self.context.append(Message::tool(&tool_result))?;
+                        return Ok(AgentResponse::Text(tool_result));
+                    }
 
                     llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
                     self.context.append(Message::tool(&tool_result))?;
@@ -685,6 +788,9 @@ mod tests {
             iteration: 3,
             tool_calls: 0,
             last_tool_failed: false,
+            last_failed_tool: String::new(),
+            last_failed_args: String::new(),
+            consecutive_identical_failures: 0,
         };
         assert!(state.iteration <= config.max_iterations,
             "Iteration {} should be within budget {}", state.iteration, config.max_iterations);
@@ -698,6 +804,9 @@ mod tests {
             iteration: 10,
             tool_calls: 5,
             last_tool_failed: true,
+            last_failed_tool: String::new(),
+            last_failed_args: String::new(),
+            consecutive_identical_failures: 0,
         };
         state = LoopState::default();
         assert_eq!(state.iteration, 0);

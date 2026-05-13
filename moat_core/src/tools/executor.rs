@@ -48,8 +48,8 @@ impl ToolExecutor {
             "fs_read" | "read_file" => {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_read requires 'path' argument"))?;
-                let normalized = normalize_workspace_path(raw_path);
-                if !self.check_path_permission(PermissionFlags::FILE_READ, &normalized).await? {
+                let resolved = Self::resolve_path(raw_path);
+                if !self.check_path_permission(PermissionFlags::FILE_READ, &resolved).await? {
                     return Ok(format!("[fs:read] DENIED: No permission to read {}", raw_path));
                 }
                 self.execute_del("read_file", args)
@@ -62,37 +62,37 @@ impl ToolExecutor {
             "fs_write" | "write_file" => {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_write requires 'path' argument"))?;
-                let normalized = normalize_workspace_path(raw_path);
-                if !self.check_path_permission(PermissionFlags::FILE_WRITE, &normalized).await? {
+                let resolved = Self::resolve_path(raw_path);
+                if !self.check_path_permission(PermissionFlags::FILE_WRITE, &resolved).await? {
                     return Ok(format!("[fs:write] DENIED: No permission to write {}", raw_path));
                 }
 
                 let content = args["content"].as_str().unwrap_or("");
-                if content.is_empty() && Path::new(&normalized).exists() {
+                if content.is_empty() && Path::new(&resolved).exists() {
                     return Err(anyhow::anyhow!(
                         "[fs:write] DENIED: Empty write to existing file detected. Use fs_delete to delete files."
                     ));
                 }
 
                 let result = self.execute_del("write_file", args)?;
-                self.journal.log_entry(&self.agent_id, "write_file", &normalized, true, &result);
+                self.journal.log_entry(&self.agent_id, "write_file", &resolved, true, &result);
                 Ok(result)
             }
             "fs_delete" => {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_delete requires 'path' argument"))?;
-                let normalized = normalize_workspace_path(raw_path);
-                if !self.check_path_permission(PermissionFlags::FILE_DELETE, &normalized).await? {
+                let resolved = Self::resolve_path(raw_path);
+                if !self.check_path_permission(PermissionFlags::FILE_DELETE, &resolved).await? {
                     return Ok(format!("[fs:delete] DENIED: No permission to delete {}", raw_path));
                 }
 
-                if !Path::new(&normalized).exists() {
-                    return Ok(format!("[fs:delete] File not found: {}", normalized));
+                if !Path::new(&resolved).exists() {
+                    return Ok(format!("[fs:delete] File not found: {}", resolved));
                 }
 
-                if Self::is_path_protected(Path::new(&normalized)) {
+                if Self::is_path_protected(Path::new(&resolved)) {
                     return Err(anyhow::anyhow!(
-                        "[fs:delete] DENIED: {:?} matches a protected pattern. Deletion denied.", normalized
+                        "[fs:delete] DENIED: {:?} matches a protected pattern. Deletion denied.", resolved
                     ));
                 }
 
@@ -101,26 +101,27 @@ impl ToolExecutor {
                     .join(".ageex").join("trash");
                 std::fs::create_dir_all(&trash_dir)?;
 
-                let original_name = Path::new(&normalized)
+                let original_name = Path::new(&resolved)
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let trash_name = format!("{}_{}", Uuid::new_v4(), original_name);
                 let trash_path = trash_dir.join(&trash_name);
 
-                std::fs::rename(&normalized, &trash_path)
+                std::fs::rename(&resolved, &trash_path)
                     .map_err(|e| anyhow::anyhow!("Delete failed: {}", e))?;
 
-                let result = format!("[fs:delete] Deleted {} (moved to trash: {:?})", normalized, trash_path);
-                self.journal.log_entry(&self.agent_id, "delete_file", &normalized, true, &result);
+                let result = format!("[fs:delete] Deleted {} (moved to trash: {:?})", resolved, trash_path);
+                self.journal.log_entry(&self.agent_id, "delete_file", &resolved, true, &result);
                 Ok(result)
             }
             "process_spawn" => {
                 let command = args["command"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("process_spawn requires 'command' argument"))?;
-                let working_dir = args["working_dir"].as_str()
+                let working_dir_raw = args["working_dir"].as_str()
                     .unwrap_or("~/Desktop/ageex-workspace");
-                if !self.check_path_permission(PermissionFlags::EXEC, working_dir).await? {
+                let resolved_wd = Self::resolve_path(working_dir_raw);
+                if !self.check_path_permission(PermissionFlags::EXEC, &resolved_wd).await? {
                     return Ok(format!("[process:spawn] DENIED: No permission to run `{}`", command));
                 }
                 self.execute_del("process_spawn", args)
@@ -163,11 +164,14 @@ impl ToolExecutor {
             return Ok(true);
         }
 
+        let capability = Self::flags_to_capability(flags);
+        let label = Self::flags_to_label(flags);
+
         let request = ApprovalRequest {
             agent_id: self.agent_id.clone(),
-            capability: Capability::FileWrite,
+            capability,
             scope: path.to_string(),
-            description: format!("Agent requested {:?} access to {}", flags, path),
+            description: format!("Agent {} requested {} access to {}", self.agent_id, label, path),
         };
 
         let decision = ApprovalFlow::request_approval(request).await?;
@@ -230,6 +234,48 @@ impl ToolExecutor {
         if file_name == "Cargo.lock" { return true; }
         if path_str.contains(".git/") { return true; }
         false
+    }
+
+    fn resolve_path(raw: &str) -> String {
+        let expanded = if raw.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.to_string_lossy().into_owned() + &raw[1..]
+            } else {
+                raw.to_string()
+            }
+        } else {
+            raw.to_string()
+        };
+        let p = Path::new(&expanded);
+        if p.is_absolute() {
+            if let Ok(canonical) = std::fs::canonicalize(&expanded) {
+                canonical.to_string_lossy().into_owned()
+            } else {
+                expanded
+            }
+        } else {
+            let workspace = dirs::home_dir()
+                .unwrap_or_default()
+                .join("Desktop")
+                .join("ageex-workspace");
+            workspace.join(raw).to_string_lossy().into_owned()
+        }
+    }
+
+    fn flags_to_capability(flags: PermissionFlags) -> Capability {
+        if flags.contains(PermissionFlags::FILE_DELETE) { Capability::FileDelete }
+        else if flags.contains(PermissionFlags::FILE_WRITE) { Capability::FileWrite }
+        else if flags.contains(PermissionFlags::FILE_READ) { Capability::FileRead }
+        else if flags.contains(PermissionFlags::EXEC) { Capability::ProcessSpawn }
+        else { Capability::FileRead }
+    }
+
+    fn flags_to_label(flags: PermissionFlags) -> &'static str {
+        if flags.contains(PermissionFlags::FILE_DELETE) { "fs:delete" }
+        else if flags.contains(PermissionFlags::FILE_WRITE) { "fs:write" }
+        else if flags.contains(PermissionFlags::FILE_READ) { "fs:read" }
+        else if flags.contains(PermissionFlags::EXEC) { "process:spawn" }
+        else { "fs:read" }
     }
 }
 
