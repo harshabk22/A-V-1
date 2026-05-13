@@ -95,7 +95,7 @@ use tools::ToolExecutor;
 use session::SessionStore;
 use profile::{ProfileStore, ProfileExtractor};
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub struct System {
@@ -201,6 +201,8 @@ impl System {
     fn replay_approvals(session_store: &SessionStore, meta_brain: &Arc<Mutex<MetaBrain>>, agent_id: &str) -> Result<()> {
         let approvals = session_store.load_approvals(agent_id)?;
         let mut brain = meta_brain.lock().unwrap();
+        let home = dirs::home_dir().unwrap_or_default();
+        let workspace = home.join("Desktop").join("ageex-workspace");
         for a in &approvals {
             let flags = match a.capability.as_str() {
                 "FileRead" => PermissionFlags::FILE_READ,
@@ -212,11 +214,26 @@ impl System {
                 "SkillExecute" => PermissionFlags::TOOL_EXEC,
                 _ => continue,
             };
-            brain.grant_path_permission(&a.scope_value, flags).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let path = normalize_approval_path(&a.scope_value, &workspace);
+            brain.grant_path_permission(&path, flags).map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         if !approvals.is_empty() {
             println!("[System] Replaying {} approval(s) for {}", approvals.len(), agent_id);
         }
         Ok(())
+    }
+}
+
+fn normalize_approval_path(path: &str, workspace: &Path) -> String {
+    if path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.to_string_lossy().into_owned() + &path[1..];
+        }
+    }
+    let p = Path::new(path);
+    if p.is_absolute() {
+        path.to_string()
+    } else {
+        workspace.join(path).to_string_lossy().into_owned()
     }
 }
