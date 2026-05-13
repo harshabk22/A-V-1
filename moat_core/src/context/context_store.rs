@@ -61,6 +61,7 @@ impl Message {
 pub struct ContextStore {
     messages: Arc<Mutex<Vec<Message>>>,
     system_prompt: String,
+    tags: Arc<Mutex<Vec<String>>>,
 }
 
 impl ContextStore {
@@ -71,6 +72,7 @@ impl ContextStore {
         Self {
             messages: Arc::new(Mutex::new(messages)),
             system_prompt: prompt,
+            tags: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -102,5 +104,31 @@ impl ContextStore {
             }
         }
         Ok(())
+    }
+
+    pub fn mark_tag(&self, tag: &str) {
+        if let Ok(mut tags) = self.tags.lock() {
+            if !tags.iter().any(|t| t == tag) {
+                tags.push(tag.to_string());
+            }
+        }
+    }
+
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.lock().map(|tags| tags.iter().any(|t| t == tag)).unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mark_tag_and_has_tag() {
+        let mut store = ContextStore::new("system prompt");
+        assert!(!store.has_tag("tool_details_injected"));
+        store.mark_tag("tool_details_injected");
+        assert!(store.has_tag("tool_details_injected"));
+        assert!(!store.has_tag("nonexistent"));
     }
 }

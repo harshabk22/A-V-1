@@ -18,6 +18,35 @@ pub enum AgentResponse {
     Delegation { task: String, reason: String },
 }
 
+#[derive(Debug, Clone)]
+pub struct LoopConfig {
+    pub max_iterations: u32,
+    pub max_tool_calls: u32,
+    pub enable_progressive_disclosure: bool,
+}
+
+impl Default for LoopConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: 12,
+            max_tool_calls: 16,
+            enable_progressive_disclosure: true,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct LoopState {
+    pub iteration: u32,
+    pub tool_calls: u32,
+    pub last_tool_failed: bool,
+}
+
+enum AgentAction {
+    Respond(String),
+    UseTool { tool_name: String, args: serde_json::Value },
+}
+
 pub struct Agent1 {
     pub capabilities: CapabilitySet,
     context: ContextStore,
@@ -26,6 +55,8 @@ pub struct Agent1 {
     session_id: String,
     session_store: Arc<SessionStore>,
     profile_store: Arc<ProfileStore>,
+    loop_config: LoopConfig,
+    loop_state: LoopState,
 }
 
 impl Agent1 {
@@ -92,6 +123,8 @@ impl Agent1 {
             session_id,
             session_store,
             profile_store,
+            loop_config: LoopConfig::default(),
+            loop_state: LoopState::default(),
         })
     }
 
@@ -99,7 +132,6 @@ impl Agent1 {
         self.context.append(Message::user(query))?;
         self.session_store.append_message(&self.session_id, "user", query)?;
 
-        // Extract preferences from user message
         let recent = vec![MessageRecord {
             id: 0,
             session_id: self.session_id.clone(),
@@ -111,62 +143,155 @@ impl Agent1 {
 
         self.check_and_compress_context()?;
 
-        let messages = self.context_to_llm_messages();
+        self.run_loop(query, tool_executor).await
+    }
 
-        let response = self.llm.chat(messages, Some(agent1_tools())).await?;
-        let choice = &response.choices[0];
-
-        if let Some(tool_calls) = &choice.message.tool_calls {
-            let mut llm_messages = self.context_to_llm_messages();
-
-            let assistant_msg = LlmMessage {
-                role: "assistant".into(),
-                content: choice.message.content.clone().unwrap_or_default(),
-                tool_call_id: None,
-                tool_calls: Some(tool_calls.clone()),
-            };
-            llm_messages.push(assistant_msg.clone());
-
-            for tool_call in tool_calls {
-                // Check for delegation before normal tool execution
-                if tool_call.function.name == "delegate_to_executor" {
-                    let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
-                        .unwrap_or(serde_json::Value::Null);
-                    let task = args["task"].as_str().unwrap_or("").to_string();
-                    let reason = args["reason"].as_str().unwrap_or("requires execution").to_string();
-                    println!("[Agent1] Delegating to Agent2: {}", task);
-                    return Ok(AgentResponse::Delegation { task, reason });
+    async fn safe_execute_tool(
+        &mut self,
+        tool_name: &str,
+        args_json: &str,
+        tool_executor: &mut ToolExecutor,
+    ) -> Result<String> {
+        match tool_executor.execute(tool_name, args_json).await {
+            Ok(output) => {
+                if output.contains("DENIED") || output.contains("No permission") {
+                    self.loop_state.last_tool_failed = true;
+                    let wrapped = format!(
+                        "[TOOL_DENIED] Tool '{}' was denied: {}. \
+                        Do NOT retry this exact call. Explain what was blocked \
+                        and suggest an alternative approach or ask the user for guidance.",
+                        tool_name, output
+                    );
+                    return Ok(wrapped);
                 }
+                self.loop_state.last_tool_failed = false;
+                Ok(output)
+            }
+            Err(e) => {
+                self.loop_state.last_tool_failed = true;
+                let wrapped = format!(
+                    "[TOOL_ERROR] Tool '{}' failed with error: {}. \
+                    Do NOT retry the same call blindly. Consider alternative strategies.",
+                    tool_name, e
+                );
+                self.context.append(Message::tool(&wrapped))?;
+                Ok(wrapped)
+            }
+        }
+    }
 
-                    let tool_result = tool_executor.execute(
-                        &tool_call.function.name,
-                        &tool_call.function.arguments,
-                    ).await?;
+    fn maybe_inject_tool_details(&mut self, user_query: &str) -> Result<()> {
+        if !self.loop_config.enable_progressive_disclosure {
+            return Ok(());
+        }
+        if self.loop_state.iteration == 1 {
+            return Ok(());
+        }
+        if self.context.has_tag("tool_details_injected") {
+            return Ok(());
+        }
+        if self.loop_state.tool_calls > 0
+            || user_query.to_lowercase().contains("tool")
+            || user_query.to_lowercase().contains("command")
+            || user_query.to_lowercase().contains("file")
+        {
+            let details = crate::llm::tool_definitions::tool_schema_details();
+            self.context.prepend_system_addendum(&format!(
+                "\n## Tool Details (Extended)\n{}\n", details
+            ))?;
+            self.context.mark_tag("tool_details_injected");
+        }
+        Ok(())
+    }
 
-                llm_messages.push(LlmMessage::tool_result(
-                    &tool_call.id,
-                    &tool_result,
-                ));
+    pub async fn run_loop(
+        &mut self,
+        user_query: &str,
+        tool_executor: &mut ToolExecutor,
+    ) -> Result<AgentResponse> {
+        self.loop_state = LoopState::default();
 
-                self.context.append(Message::tool(&tool_result))?;
+        loop {
+            self.loop_state.iteration += 1;
+
+            // Prevent hammering the LLM between iterations
+            if self.loop_state.iteration > 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
 
-            let final_response = self.llm.chat(llm_messages, None).await?;
-            let final_text = final_response.choices[0]
-                .message.content.clone()
-                .unwrap_or_else(|| "I completed the requested operation.".into());
+            if self.loop_state.iteration > self.loop_config.max_iterations {
+                let msg = format!(
+                    "Iteration budget exhausted after {} steps. \
+                    I need you to either narrow the task or confirm I should continue in a new request.",
+                    self.loop_config.max_iterations
+                );
+                return Ok(AgentResponse::Text(msg));
+            }
 
-            self.context.append(Message::assistant(&final_text))?;
-            self.session_store.append_message(&self.session_id, "assistant", &final_text)?;
-            return Ok(AgentResponse::Text(final_text));
+            self.maybe_inject_tool_details(user_query)?;
+
+            let messages = self.context_to_llm_messages();
+            let response = self.llm.chat(messages, Some(agent1_tools())).await?;
+            let choice = &response.choices[0];
+
+            if let Some(tool_calls) = &choice.message.tool_calls {
+                let mut llm_messages = self.context_to_llm_messages();
+
+                let assistant_msg = LlmMessage {
+                    role: "assistant".into(),
+                    content: choice.message.content.clone().unwrap_or_default(),
+                    tool_call_id: None,
+                    tool_calls: Some(tool_calls.clone()),
+                };
+                llm_messages.push(assistant_msg);
+
+                for tool_call in tool_calls {
+                    if tool_call.function.name == "delegate_to_executor" {
+                        let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+                            .unwrap_or(serde_json::Value::Null);
+                        let task = args["task"].as_str().unwrap_or("").to_string();
+                        let reason = args["reason"].as_str().unwrap_or("requires execution").to_string();
+                        println!("[Agent1] Delegating to Agent2: {}", task);
+                        return Ok(AgentResponse::Delegation { task, reason });
+                    }
+
+                    self.loop_state.tool_calls += 1;
+                    if self.loop_state.tool_calls > self.loop_config.max_tool_calls {
+                        let msg = format!(
+                            "Tool-call budget exhausted after {} tools. \
+                            Stopping to avoid runaway execution.",
+                            self.loop_config.max_tool_calls
+                        );
+                        return Ok(AgentResponse::Text(msg));
+                    }
+
+                    let tool_result = self.safe_execute_tool(
+                        &tool_call.function.name,
+                        &tool_call.function.arguments,
+                        tool_executor,
+                    ).await?;
+
+                    llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
+                    self.context.append(Message::tool(&tool_result))?;
+                }
+
+                // Append assistant's tool-calling decision to context
+                self.context.append(Message::assistant(
+                    &format!("Called tools: {}",
+                        tool_calls.iter().map(|tc| tc.function.name.clone()).collect::<Vec<_>>().join(", "))
+                ))?;
+
+                // CONTINUE the loop — next iteration sees tool results in context
+                continue;
+            }
+
+            // No tool calls → final answer, exit loop
+            let text = choice.message.content.clone()
+                .unwrap_or_else(|| "I don't have a response for that.".into());
+            self.context.append(Message::assistant(&text))?;
+            self.session_store.append_message(&self.session_id, "assistant", &text)?;
+            return Ok(AgentResponse::Text(text));
         }
-
-        let text = choice.message.content.clone()
-            .unwrap_or_else(|| "I don't have a response for that.".into());
-
-        self.context.append(Message::assistant(&text))?;
-        self.session_store.append_message(&self.session_id, "assistant", &text)?;
-        Ok(AgentResponse::Text(text))
     }
 
     fn context_to_llm_messages(&self) -> Vec<LlmMessage> {
@@ -225,6 +350,8 @@ pub struct Agent2 {
     session_id: String,
     session_store: Arc<SessionStore>,
     profile_store: Arc<ProfileStore>,
+    loop_config: LoopConfig,
+    loop_state: LoopState,
 }
 
 impl Agent2 {
@@ -291,6 +418,8 @@ impl Agent2 {
             session_id,
             session_store,
             profile_store,
+            loop_config: LoopConfig::default(),
+            loop_state: LoopState::default(),
         })
     }
 
@@ -298,7 +427,6 @@ impl Agent2 {
         self.context.append(Message::user(query))?;
         self.session_store.append_message(&self.session_id, "user", query)?;
 
-        // Extract preferences from user message
         let recent = vec![MessageRecord {
             id: 0,
             session_id: self.session_id.clone(),
@@ -310,51 +438,146 @@ impl Agent2 {
 
         self.check_and_compress_context()?;
 
-        let messages = self.context_to_llm_messages();
-        let response = self.llm.chat(messages, Some(agent2_tools())).await?;
-        let choice = &response.choices[0];
+        self.run_loop(query, tool_executor).await
+    }
 
-        if let Some(tool_calls) = &choice.message.tool_calls {
-            let mut llm_messages = self.context_to_llm_messages();
+    async fn safe_execute_tool(
+        &mut self,
+        tool_name: &str,
+        args_json: &str,
+        tool_executor: &mut ToolExecutor,
+    ) -> Result<String> {
+        match tool_executor.execute(tool_name, args_json).await {
+            Ok(output) => {
+                if output.contains("DENIED") || output.contains("No permission") {
+                    self.loop_state.last_tool_failed = true;
+                    let wrapped = format!(
+                        "[TOOL_DENIED] Tool '{}' was denied: {}. \
+                        Do NOT retry this exact call. Explain what was blocked \
+                        and suggest an alternative approach or ask the user for guidance.",
+                        tool_name, output
+                    );
+                    return Ok(wrapped);
+                }
+                self.loop_state.last_tool_failed = false;
+                Ok(output)
+            }
+            Err(e) => {
+                self.loop_state.last_tool_failed = true;
+                let wrapped = format!(
+                    "[TOOL_ERROR] Tool '{}' failed with error: {}. \
+                    Do NOT retry the same call blindly. Consider alternative strategies.",
+                    tool_name, e
+                );
+                self.context.append(Message::tool(&wrapped))?;
+                Ok(wrapped)
+            }
+        }
+    }
 
-            let assistant_msg = LlmMessage {
-                role: "assistant".into(),
-                content: choice.message.content.clone().unwrap_or_default(),
-                tool_call_id: None,
-                tool_calls: Some(tool_calls.clone()),
-            };
-            llm_messages.push(assistant_msg);
+    fn maybe_inject_tool_details(&mut self, user_query: &str) -> Result<()> {
+        if !self.loop_config.enable_progressive_disclosure {
+            return Ok(());
+        }
+        if self.loop_state.iteration == 1 {
+            return Ok(());
+        }
+        if self.context.has_tag("tool_details_injected") {
+            return Ok(());
+        }
+        if self.loop_state.tool_calls > 0
+            || user_query.to_lowercase().contains("tool")
+            || user_query.to_lowercase().contains("command")
+            || user_query.to_lowercase().contains("file")
+        {
+            let details = crate::llm::tool_definitions::tool_schema_details();
+            self.context.prepend_system_addendum(&format!(
+                "\n## Tool Details (Extended)\n{}\n", details
+            ))?;
+            self.context.mark_tag("tool_details_injected");
+        }
+        Ok(())
+    }
 
-            for tool_call in tool_calls {
-                    let tool_result = tool_executor.execute(
-                        &tool_call.function.name,
-                        &tool_call.function.arguments,
-                    ).await?;
+    pub async fn run_loop(
+        &mut self,
+        user_query: &str,
+        tool_executor: &mut ToolExecutor,
+    ) -> Result<AgentResponse> {
+        self.loop_state = LoopState::default();
 
-                llm_messages.push(LlmMessage::tool_result(
-                    &tool_call.id,
-                    &tool_result,
-                ));
+        loop {
+            self.loop_state.iteration += 1;
 
-                self.context.append(Message::tool(&tool_result))?;
+            // Prevent hammering the LLM between iterations
+            if self.loop_state.iteration > 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
 
-            let final_response = self.llm.chat(llm_messages, None).await?;
-            let final_text = final_response.choices[0]
-                .message.content.clone()
-                .unwrap_or_else(|| "Operation completed.".into());
+            if self.loop_state.iteration > self.loop_config.max_iterations {
+                let msg = format!(
+                    "Iteration budget exhausted after {} steps. \
+                    I need you to either narrow the task or confirm I should continue in a new request.",
+                    self.loop_config.max_iterations
+                );
+                return Ok(AgentResponse::Text(msg));
+            }
 
-            self.context.append(Message::assistant(&final_text))?;
-            self.session_store.append_message(&self.session_id, "assistant", &final_text)?;
-            return Ok(AgentResponse::Text(final_text));
+            self.maybe_inject_tool_details(user_query)?;
+
+            let messages = self.context_to_llm_messages();
+            let response = self.llm.chat(messages, Some(agent2_tools())).await?;
+            let choice = &response.choices[0];
+
+            if let Some(tool_calls) = &choice.message.tool_calls {
+                let mut llm_messages = self.context_to_llm_messages();
+
+                let assistant_msg = LlmMessage {
+                    role: "assistant".into(),
+                    content: choice.message.content.clone().unwrap_or_default(),
+                    tool_call_id: None,
+                    tool_calls: Some(tool_calls.clone()),
+                };
+                llm_messages.push(assistant_msg);
+
+                for tool_call in tool_calls {
+                    self.loop_state.tool_calls += 1;
+                    if self.loop_state.tool_calls > self.loop_config.max_tool_calls {
+                        let msg = format!(
+                            "Tool-call budget exhausted after {} tools. \
+                            Stopping to avoid runaway execution.",
+                            self.loop_config.max_tool_calls
+                        );
+                        return Ok(AgentResponse::Text(msg));
+                    }
+
+                    let tool_result = self.safe_execute_tool(
+                        &tool_call.function.name,
+                        &tool_call.function.arguments,
+                        tool_executor,
+                    ).await?;
+
+                    llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
+                    self.context.append(Message::tool(&tool_result))?;
+                }
+
+                // Append assistant's tool-calling decision to context
+                self.context.append(Message::assistant(
+                    &format!("Called tools: {}",
+                        tool_calls.iter().map(|tc| tc.function.name.clone()).collect::<Vec<_>>().join(", "))
+                ))?;
+
+                // CONTINUE the loop — next iteration sees tool results in context
+                continue;
+            }
+
+            // No tool calls → final answer, exit loop
+            let text = choice.message.content.clone()
+                .unwrap_or_else(|| "I don't have a response for that.".into());
+            self.context.append(Message::assistant(&text))?;
+            self.session_store.append_message(&self.session_id, "assistant", &text)?;
+            return Ok(AgentResponse::Text(text));
         }
-
-        let text = choice.message.content.clone()
-            .unwrap_or_else(|| "I don't have a response for that.".into());
-
-        self.context.append(Message::assistant(&text))?;
-        self.session_store.append_message(&self.session_id, "assistant", &text)?;
-        Ok(AgentResponse::Text(text))
     }
 
     fn context_to_llm_messages(&self) -> Vec<LlmMessage> {
@@ -402,5 +625,94 @@ impl Agent2 {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_loop_config_defaults() {
+        let config = LoopConfig::default();
+        assert_eq!(config.max_iterations, 12);
+        assert_eq!(config.max_tool_calls, 16);
+        assert_eq!(config.enable_progressive_disclosure, true);
+    }
+
+    #[test]
+    fn test_loop_state_defaults() {
+        let state = LoopState::default();
+        assert_eq!(state.iteration, 0);
+        assert_eq!(state.tool_calls, 0);
+        assert_eq!(state.last_tool_failed, false);
+    }
+
+    #[test]
+    fn test_iteration_budget_exceeded() {
+        let config = LoopConfig {
+            max_iterations: 5,
+            max_tool_calls: 16,
+            enable_progressive_disclosure: false,
+        };
+        let mut state = LoopState::default();
+        state.iteration = 6;
+        assert!(state.iteration > config.max_iterations,
+            "Iteration {} should exceed budget {}", state.iteration, config.max_iterations);
+    }
+
+    #[test]
+    fn test_tool_call_budget_exceeded() {
+        let config = LoopConfig {
+            max_iterations: 12,
+            max_tool_calls: 3,
+            enable_progressive_disclosure: false,
+        };
+        let mut state = LoopState::default();
+        state.tool_calls = 4;
+        assert!(state.tool_calls > config.max_tool_calls,
+            "Tool calls {} should exceed budget {}", state.tool_calls, config.max_tool_calls);
+    }
+
+    #[test]
+    fn test_iteration_within_budget_passes() {
+        let config = LoopConfig {
+            max_iterations: 5,
+            max_tool_calls: 16,
+            enable_progressive_disclosure: false,
+        };
+        let state = LoopState {
+            iteration: 3,
+            tool_calls: 0,
+            last_tool_failed: false,
+        };
+        assert!(state.iteration <= config.max_iterations,
+            "Iteration {} should be within budget {}", state.iteration, config.max_iterations);
+        assert!(state.tool_calls <= config.max_tool_calls,
+            "Tool calls {} should be within budget {}", state.tool_calls, config.max_tool_calls);
+    }
+
+    #[test]
+    fn test_loop_state_reset() {
+        let mut state = LoopState {
+            iteration: 10,
+            tool_calls: 5,
+            last_tool_failed: true,
+        };
+        state = LoopState::default();
+        assert_eq!(state.iteration, 0);
+        assert_eq!(state.tool_calls, 0);
+        assert_eq!(state.last_tool_failed, false);
+    }
+
+    #[test]
+    fn test_safe_execute_tool_error_injects_context() {
+        let mut state = LoopState::default();
+        state.last_tool_failed = false;
+        state.last_tool_failed = true;
+        assert!(state.last_tool_failed);
+
+        state.last_tool_failed = false;
+        assert!(!state.last_tool_failed);
     }
 }

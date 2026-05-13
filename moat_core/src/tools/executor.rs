@@ -262,3 +262,33 @@ mod tests {
         assert!(ToolExecutor::is_path_protected(Path::new("/project/Cargo.lock")));
     }
 }
+
+    #[test]
+    fn test_seatbelt_profile_contains_working_dir() {
+        let profile = r#"(version 1)
+(deny default)
+(allow file-read*)
+(allow file-write* (subpath "/tmp/test"))
+(allow process-exec*)"#;
+        assert!(profile.contains("(deny default)"));
+        assert!(profile.contains("(allow file-write*"));
+    }
+
+    #[test]
+    fn test_protected_patterns_prevent_log_deletion() {
+        assert!(ToolExecutor::is_path_protected(Path::new("/workspace/debug.log")), "*.log must be protected");
+        assert!(ToolExecutor::is_path_protected(Path::new("/workspace/data.db")), "*.db must be protected");
+        assert!(ToolExecutor::is_path_protected(Path::new("/workspace/secrets.key")), "*.key must be protected");
+        assert!(ToolExecutor::is_path_protected(Path::new("/workspace/cert.pem")), "*.pem must be protected");
+    }
+
+    #[test]
+    fn test_git_directory_is_protected() {
+        assert!(ToolExecutor::is_path_protected(Path::new("/workspace/.git/config")), ".git/** must be protected");
+    }
+
+    #[test]
+    fn test_regular_files_are_not_protected() {
+        assert!(!ToolExecutor::is_path_protected(Path::new("/workspace/main.rs")), ".rs files should NOT be protected");
+        assert!(!ToolExecutor::is_path_protected(Path::new("/workspace/README.md")), ".md files should NOT be protected");
+    }

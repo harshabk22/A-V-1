@@ -112,3 +112,35 @@ impl ExecutionJournal {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_journal_logs_destructive_severity() {
+        let tmp = std::env::temp_dir().join(format!("test_delete_journal_{}.jsonl", uuid::Uuid::new_v4()));
+        let journal = ExecutionJournal { path: tmp.clone() };
+        
+        journal.log_entry("agent2", "delete_file", "/tmp/test.txt", true, "Deleted file");
+        
+        let content = std::fs::read_to_string(&tmp).unwrap();
+        assert!(content.contains("\"severity\":\"destructive\""));
+        assert!(content.contains("\"tool_name\":\"delete_file\""));
+        
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn test_journal_logs_normal_severity() {
+        let tmp = std::env::temp_dir().join(format!("test_read_journal_{}.jsonl", uuid::Uuid::new_v4()));
+        let journal = ExecutionJournal { path: tmp.clone() };
+        
+        journal.log_entry("agent1", "read_file", "/tmp/test.txt", true, "Read 100 bytes");
+        
+        let content = std::fs::read_to_string(&tmp).unwrap();
+        assert!(content.contains("\"severity\":\"normal\""));
+        
+        std::fs::remove_file(&tmp).ok();
+    }
+}

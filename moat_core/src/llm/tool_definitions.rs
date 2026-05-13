@@ -241,3 +241,52 @@ pub fn agent2_tools() -> Vec<ToolDefinition> {
 
     tools
 }
+
+pub fn tool_index_summary() -> String {
+    let tools = agent2_tools();
+    let mut lines = Vec::new();
+    for tool in &tools {
+        let name = &tool.function.name;
+        let desc = &tool.function.description;
+        let params: Vec<String> = tool.function.parameters["properties"]
+            .as_object()
+            .map(|props| props.keys().cloned().collect())
+            .unwrap_or_default();
+        lines.push(format!("  - {}({}) — {}", name, params.join(", "), desc));
+    }
+    lines.join("\n")
+}
+
+pub fn tool_schema_details() -> String {
+    let tools = agent2_tools();
+    let mut lines = Vec::new();
+    for tool in &tools {
+        let name = &tool.function.name;
+        let desc = &tool.function.description;
+        let params = serde_json::to_string_pretty(&tool.function.parameters)
+            .unwrap_or_default();
+        lines.push(format!("## {}\n{}\n```json\n{}\n```\n", name, desc, params));
+    }
+    lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_index_summary_has_all_tools() {
+        let summary = tool_index_summary();
+        assert!(summary.contains("fs_read"), "Missing fs_read in: {}", summary);
+        assert!(summary.contains("fs_write"), "Missing fs_write");
+        assert!(summary.contains("fs_exists"), "Missing fs_exists");
+        assert!(summary.contains("process_spawn"), "Missing process_spawn");
+    }
+
+    #[test]
+    fn test_tool_schema_details_includes_parameters() {
+        let details = tool_schema_details();
+        assert!(details.contains("path"), "Missing path in: {}", details);
+        assert!(details.contains("content") || details.contains("command"), "Missing params in: {}", details);
+    }
+}
