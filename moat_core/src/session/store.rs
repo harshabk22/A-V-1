@@ -212,10 +212,11 @@ impl SessionStore {
     }
 
     pub fn clean_corrupted_preferences(&self) -> Result<()> {
+        let table = format!("{}user_preferences", self.prefix);
         let common_words = ["called", "named", "is", "the", "a", "an", "my"];
         for word in &common_words {
             self.conn.execute(
-                "DELETE FROM user_preferences WHERE LOWER(value) = ?1",
+                &format!("DELETE FROM {table} WHERE LOWER(value) = ?1"),
                 params![word],
             )?;
         }
