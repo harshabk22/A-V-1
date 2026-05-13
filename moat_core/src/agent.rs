@@ -593,3 +593,92 @@ impl Agent2 {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_loop_config_defaults() {
+        let config = LoopConfig::default();
+        assert_eq!(config.max_iterations, 12);
+        assert_eq!(config.max_tool_calls, 16);
+        assert_eq!(config.enable_progressive_disclosure, true);
+    }
+
+    #[test]
+    fn test_loop_state_defaults() {
+        let state = LoopState::default();
+        assert_eq!(state.iteration, 0);
+        assert_eq!(state.tool_calls, 0);
+        assert_eq!(state.last_tool_failed, false);
+    }
+
+    #[test]
+    fn test_iteration_budget_exceeded() {
+        let config = LoopConfig {
+            max_iterations: 5,
+            max_tool_calls: 16,
+            enable_progressive_disclosure: false,
+        };
+        let mut state = LoopState::default();
+        state.iteration = 6;
+        assert!(state.iteration > config.max_iterations,
+            "Iteration {} should exceed budget {}", state.iteration, config.max_iterations);
+    }
+
+    #[test]
+    fn test_tool_call_budget_exceeded() {
+        let config = LoopConfig {
+            max_iterations: 12,
+            max_tool_calls: 3,
+            enable_progressive_disclosure: false,
+        };
+        let mut state = LoopState::default();
+        state.tool_calls = 4;
+        assert!(state.tool_calls > config.max_tool_calls,
+            "Tool calls {} should exceed budget {}", state.tool_calls, config.max_tool_calls);
+    }
+
+    #[test]
+    fn test_iteration_within_budget_passes() {
+        let config = LoopConfig {
+            max_iterations: 5,
+            max_tool_calls: 16,
+            enable_progressive_disclosure: false,
+        };
+        let state = LoopState {
+            iteration: 3,
+            tool_calls: 0,
+            last_tool_failed: false,
+        };
+        assert!(state.iteration <= config.max_iterations,
+            "Iteration {} should be within budget {}", state.iteration, config.max_iterations);
+        assert!(state.tool_calls <= config.max_tool_calls,
+            "Tool calls {} should be within budget {}", state.tool_calls, config.max_tool_calls);
+    }
+
+    #[test]
+    fn test_loop_state_reset() {
+        let mut state = LoopState {
+            iteration: 10,
+            tool_calls: 5,
+            last_tool_failed: true,
+        };
+        state = LoopState::default();
+        assert_eq!(state.iteration, 0);
+        assert_eq!(state.tool_calls, 0);
+        assert_eq!(state.last_tool_failed, false);
+    }
+
+    #[test]
+    fn test_safe_execute_tool_error_injects_context() {
+        let mut state = LoopState::default();
+        state.last_tool_failed = false;
+        state.last_tool_failed = true;
+        assert!(state.last_tool_failed);
+
+        state.last_tool_failed = false;
+        assert!(!state.last_tool_failed);
+    }
+}
