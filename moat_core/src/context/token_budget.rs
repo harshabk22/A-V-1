@@ -1,5 +1,11 @@
 use tiktoken_rs::cl100k_base;
 use anyhow::Result;
+use std::sync::OnceLock;
+
+fn bpe_model() -> &'static tiktoken_rs::CoreBPE {
+    static BPE: OnceLock<tiktoken_rs::CoreBPE> = OnceLock::new();
+    BPE.get_or_init(|| cl100k_base().expect("tiktoken cl100k_base model failed to load"))
+}
 
 pub struct TokenBudget {
     max_tokens: usize,
@@ -17,8 +23,7 @@ impl TokenBudget {
     }
 
     pub fn count_tokens(text: &str) -> Result<usize> {
-        let bpe = cl100k_base()?;
-        let tokens = bpe.encode_with_special_tokens(text);
+        let tokens = bpe_model().encode_with_special_tokens(text);
         Ok(tokens.len())
     }
 
