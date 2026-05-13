@@ -25,7 +25,7 @@ impl ToolExecutor {
         meta_brain: Arc<Mutex<MetaBrain>>,
         agent_id: impl Into<String>,
         session_store: Arc<SessionStore>,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::new_with_auto_deny(meta_brain, agent_id, session_store, false)
     }
 
@@ -34,21 +34,21 @@ impl ToolExecutor {
         agent_id: impl Into<String>,
         session_store: Arc<SessionStore>,
         auto_deny: bool,
-    ) -> Self {
-        let del = DelExecutor::new().expect("Failed to initialize DEL executor");
+    ) -> Result<Self> {
+        let del = DelExecutor::new()?;
         let journal = ExecutionJournal::open()
             .unwrap_or_else(|e| {
                 eprintln!("[ToolExecutor] Journal unavailable: {}", e);
                 ExecutionJournal { path: std::path::PathBuf::new() }
             });
-        Self {
+        Ok(Self {
             meta_brain,
             agent_id: agent_id.into(),
             session_store,
             del,
             journal,
             auto_deny,
-        }
+        })
     }
 
     pub async fn execute(&mut self, tool_name: &str, args_json: &str) -> Result<String> {
