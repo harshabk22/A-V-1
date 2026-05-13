@@ -38,6 +38,7 @@ impl PermissionFlags {
     pub const URL_OPEN: Self = Self(1 << 5);
     pub const APP_LAUNCH: Self = Self(1 << 6);
     pub const TOOL_EXEC: Self = Self(1 << 7);
+    pub const FILE_DELETE: Self = Self(1 << 8);
 
     pub fn contains(self, flags: Self) -> bool {
         (self.0 & flags.0) == flags.0

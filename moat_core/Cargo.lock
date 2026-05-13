@@ -2280,6 +2280,7 @@ name = "moat_core"
 version = "0.1.0"
 dependencies = [
  "active-win-pos-rs",
+ "anyhow",
  "arboard",
  "async-trait",
  "base64 0.22.1",
@@ -2315,6 +2316,7 @@ dependencies = [
  "tokio-cron-scheduler",
  "tokio-tungstenite",
  "tokio-util",
+ "toml",
  "tracing",
  "url",
  "uuid",

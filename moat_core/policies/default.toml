@@ -1,0 +1,24 @@
+# AGEEX Default Execution Policy
+# Path: ~/.ageex/policy.toml (copied from this template on first run)
+
+allow_network = false
+allow_process_spawn = true
+max_file_write_size_mb = 10
+
+blocked_commands = [
+    "rm -rf /",
+    "sudo",
+    "mkfs",
+    "dd if=/dev/",
+    "chmod 777 /",
+    ":(){:|:&};:",
+]
+
+allowed_paths = [
+    "~/Desktop/ageex-workspace",
+]
+
+require_approval_for = [
+    "ProcessSpawn",
+    "FileWrite",
+]
