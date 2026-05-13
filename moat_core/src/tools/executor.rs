@@ -17,6 +17,7 @@ pub struct ToolExecutor {
     session_store: Arc<SessionStore>,
     del: DelExecutor,
     journal: ExecutionJournal,
+    auto_deny: bool,
 }
 
 impl ToolExecutor {
@@ -24,6 +25,15 @@ impl ToolExecutor {
         meta_brain: Arc<Mutex<MetaBrain>>,
         agent_id: impl Into<String>,
         session_store: Arc<SessionStore>,
+    ) -> Self {
+        Self::new_with_auto_deny(meta_brain, agent_id, session_store, false)
+    }
+
+    pub fn new_with_auto_deny(
+        meta_brain: Arc<Mutex<MetaBrain>>,
+        agent_id: impl Into<String>,
+        session_store: Arc<SessionStore>,
+        auto_deny: bool,
     ) -> Self {
         let del = DelExecutor::new().expect("Failed to initialize DEL executor");
         let journal = ExecutionJournal::open()
@@ -37,6 +47,7 @@ impl ToolExecutor {
             session_store,
             del,
             journal,
+            auto_deny,
         }
     }
 
@@ -129,11 +140,17 @@ impl ToolExecutor {
             "app_open" => {
                 let app_name = args["app_name"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("app_open requires 'app_name' argument"))?;
+                if !self.check_app_permission(app_name).await? {
+                    return Ok(format!("[app:open] DENIED: No permission to open {}", app_name));
+                }
                 Self::execute_app_open(app_name)
             }
             "url_open" => {
                 let url = args["url"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("url_open requires 'url' argument"))?;
+                if !self.check_url_permission(url).await? {
+                    return Ok(format!("[url:open] DENIED: No permission to open {}", url));
+                }
                 Self::execute_url_open(url)
             }
             unknown => anyhow::bail!("Unknown tool: {}", unknown),
@@ -164,6 +181,12 @@ impl ToolExecutor {
             return Ok(true);
         }
 
+        if self.auto_deny {
+            let label = Self::flags_to_label(flags);
+            eprintln!("[ToolExecutor] auto-deny: {} attempted {} on {} (permission not pre-granted)", self.agent_id, label, path);
+            return Ok(false);
+        }
+
         let capability = Self::flags_to_capability(flags);
         let label = Self::flags_to_label(flags);
 
@@ -185,6 +208,105 @@ impl ToolExecutor {
                     &format!("{:?}", flags),
                     "path",
                     path,
+                )?;
+                Ok(true)
+            }
+            ApprovalDecision::Denied | ApprovalDecision::TimedOut => Ok(false),
+        }
+    }
+
+    async fn check_app_permission(&mut self, app_name: &str) -> Result<bool> {
+        let has_permission = {
+            let brain = self.meta_brain.lock().unwrap();
+            brain.app_has_permission(app_name, PermissionFlags::APP_LAUNCH)
+        };
+
+        if has_permission {
+            return Ok(true);
+        }
+
+        if self.auto_deny {
+            eprintln!("[ToolExecutor] auto-deny: {} attempted app_open on {} (permission not pre-granted)", self.agent_id, app_name);
+            return Ok(false);
+        }
+
+        let request = ApprovalRequest {
+            agent_id: self.agent_id.clone(),
+            capability: Capability::AppOpen,
+            scope: app_name.to_string(),
+            description: format!("Agent {} requested to open app '{}'", self.agent_id, app_name),
+        };
+
+        let decision = ApprovalFlow::request_approval(request).await?;
+
+        match decision {
+            ApprovalDecision::Granted => {
+                let mut brain = self.meta_brain.lock().unwrap();
+                brain.grant_app_permission(app_name, PermissionFlags::APP_LAUNCH)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                self.session_store.record_approval(
+                    &self.agent_id,
+                    "APP_LAUNCH",
+                    "app",
+                    app_name,
+                )?;
+                Ok(true)
+            }
+            ApprovalDecision::Denied | ApprovalDecision::TimedOut => Ok(false),
+        }
+    }
+
+    async fn check_url_permission(&mut self, url_str: &str) -> Result<bool> {
+        use crate::meta_brain::PermissionFlags as Pf;
+
+        let (scheme, domain) = if let Ok(parsed) = url::Url::parse(url_str) {
+            let scheme = parsed.scheme().to_string();
+            let domain = parsed.host_str().unwrap_or("").to_string();
+            (scheme, domain)
+        } else {
+            let scheme = url_str.split("://").next().unwrap_or(url_str).to_string();
+            (scheme, String::new())
+        };
+
+        let has_permission = {
+            let brain = self.meta_brain.lock().unwrap();
+            let scheme_ok = scheme.is_empty() || brain.url_scheme_has_permission(&scheme, Pf::URL_OPEN);
+            let domain_ok = domain.is_empty() || brain.domain_has_permission(&domain, Pf::NET_OUTBOUND);
+            scheme_ok && domain_ok
+        };
+
+        if has_permission {
+            return Ok(true);
+        }
+
+        if self.auto_deny {
+            eprintln!("[ToolExecutor] auto-deny: {} attempted url_open on {} (permission not pre-granted)", self.agent_id, url_str);
+            return Ok(false);
+        }
+
+        let request = ApprovalRequest {
+            agent_id: self.agent_id.clone(),
+            capability: Capability::UrlOpen,
+            scope: url_str.to_string(),
+            description: format!("Agent {} requested to open URL '{}'", self.agent_id, url_str),
+        };
+
+        let decision = ApprovalFlow::request_approval(request).await?;
+
+        match decision {
+            ApprovalDecision::Granted => {
+                let mut brain = self.meta_brain.lock().unwrap();
+                if !scheme.is_empty() {
+                    let _ = brain.grant_url_scheme_permission(&scheme, Pf::URL_OPEN);
+                }
+                if !domain.is_empty() {
+                    let _ = brain.grant_domain_permission(&domain, Pf::NET_OUTBOUND);
+                }
+                self.session_store.record_approval(
+                    &self.agent_id,
+                    "URL_OPEN",
+                    "url",
+                    url_str,
                 )?;
                 Ok(true)
             }
