@@ -31,7 +31,7 @@ impl ToolExecutor {
         }
     }
 
-    pub fn execute(&mut self, tool_name: &str, args_json: &str) -> Result<String> {
+    pub async fn execute(&mut self, tool_name: &str, args_json: &str) -> Result<String> {
         let args: serde_json::Value = serde_json::from_str(args_json)
             .unwrap_or(serde_json::Value::Null);
 
@@ -43,7 +43,7 @@ impl ToolExecutor {
                 if !self.check_permission_with_approval(
                     Capability::FileRead,
                     PermissionScope::Path(PathBuf::from(&normalized)),
-                )? {
+                ).await? {
                     return Ok(format!("[fs:read] DENIED: No permission to read {}", raw_path));
                 }
                 self.execute_del("read_file", args)
@@ -60,7 +60,7 @@ impl ToolExecutor {
                 if !self.check_permission_with_approval(
                     Capability::FileWrite,
                     PermissionScope::Path(PathBuf::from(&normalized)),
-                )? {
+                ).await? {
                     return Ok(format!("[fs:write] DENIED: No permission to write {}", raw_path));
                 }
                 self.execute_del("write_file", args)
@@ -73,7 +73,7 @@ impl ToolExecutor {
                 if !self.check_permission_with_approval(
                     Capability::ProcessSpawn,
                     PermissionScope::Path(PathBuf::from(working_dir)),
-                )? {
+                ).await? {
                     return Ok(format!("[process:spawn] DENIED: No permission to run `{}`", command));
                 }
                 self.execute_del("process_spawn", args)
@@ -106,7 +106,7 @@ impl ToolExecutor {
         }
     }
 
-    fn check_permission_with_approval(
+    async fn check_permission_with_approval(
         &mut self,
         capability: Capability,
         scope: PermissionScope,
@@ -127,7 +127,7 @@ impl ToolExecutor {
             description: format!("Agent requested {:?} access to {:?}", capability, scope),
         };
 
-        let decision = ApprovalFlow::request_approval(request)?;
+        let decision = ApprovalFlow::request_approval(request).await?;
 
         match decision {
             ApprovalDecision::Granted => {
@@ -142,7 +142,7 @@ impl ToolExecutor {
                 )?;
                 Ok(true)
             }
-            ApprovalDecision::Denied => Ok(false),
+            ApprovalDecision::Denied | ApprovalDecision::TimedOut => Ok(false),
         }
     }
 

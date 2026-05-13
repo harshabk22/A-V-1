@@ -13,12 +13,13 @@ pub struct ApprovalRequest {
 pub enum ApprovalDecision {
     Granted,
     Denied,
+    TimedOut,
 }
 
 pub struct ApprovalFlow;
 
 impl ApprovalFlow {
-    pub fn request_approval(request: ApprovalRequest) -> Result<ApprovalDecision> {
+    pub async fn request_approval(request: ApprovalRequest) -> Result<ApprovalDecision> {
         println!("\n╔════════════════════════════════════════════════════════╗");
         println!("║          PERMISSION REQUEST FROM AGENT                  ║");
         println!("╠════════════════════════════════════════════════════════╣");
@@ -31,11 +32,18 @@ impl ApprovalFlow {
         print!("Grant permission? [y/N]: ");
         io::stdout().flush()?;
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
+        let result = tokio::task::spawn_blocking(move || {
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).map(|_| input)
+        })
+        .await
+        .unwrap_or_else(|_| Ok(String::new()))
+        .ok()
+        .unwrap_or_default();
 
-        let decision = match input.trim().to_lowercase().as_str() {
+        let decision = match result.trim().to_lowercase().as_str() {
             "y" | "yes" => ApprovalDecision::Granted,
+            "" => ApprovalDecision::TimedOut,
             _ => ApprovalDecision::Denied,
         };
 

@@ -152,8 +152,18 @@ impl Agent1 {
         args_json: &str,
         tool_executor: &mut ToolExecutor,
     ) -> Result<String> {
-        match tool_executor.execute(tool_name, args_json) {
+        match tool_executor.execute(tool_name, args_json).await {
             Ok(output) => {
+                if output.contains("DENIED") || output.contains("No permission") {
+                    self.loop_state.last_tool_failed = true;
+                    let wrapped = format!(
+                        "[TOOL_DENIED] Tool '{}' was denied: {}. \
+                        Do NOT retry this exact call. Explain what was blocked \
+                        and suggest an alternative approach or ask the user for guidance.",
+                        tool_name, output
+                    );
+                    return Ok(wrapped);
+                }
                 self.loop_state.last_tool_failed = false;
                 Ok(output)
             }
@@ -203,6 +213,11 @@ impl Agent1 {
 
         loop {
             self.loop_state.iteration += 1;
+
+            // Prevent hammering the LLM between iterations
+            if self.loop_state.iteration > 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
 
             if self.loop_state.iteration > self.loop_config.max_iterations {
                 let msg = format!(
@@ -260,15 +275,17 @@ impl Agent1 {
                     self.context.append(Message::tool(&tool_result))?;
                 }
 
-                let final_response = self.llm.chat(llm_messages, None).await?;
-                let final_text = final_response.choices[0].message.content.clone()
-                    .unwrap_or_else(|| "I completed the requested operation.".into());
+                // Append assistant's tool-calling decision to context
+                self.context.append(Message::assistant(
+                    &format!("Called tools: {}",
+                        tool_calls.iter().map(|tc| tc.function.name.clone()).collect::<Vec<_>>().join(", "))
+                ))?;
 
-                self.context.append(Message::assistant(&final_text))?;
-                self.session_store.append_message(&self.session_id, "assistant", &final_text)?;
-                return Ok(AgentResponse::Text(final_text));
+                // CONTINUE the loop — next iteration sees tool results in context
+                continue;
             }
 
+            // No tool calls → final answer, exit loop
             let text = choice.message.content.clone()
                 .unwrap_or_else(|| "I don't have a response for that.".into());
             self.context.append(Message::assistant(&text))?;
@@ -430,8 +447,18 @@ impl Agent2 {
         args_json: &str,
         tool_executor: &mut ToolExecutor,
     ) -> Result<String> {
-        match tool_executor.execute(tool_name, args_json) {
+        match tool_executor.execute(tool_name, args_json).await {
             Ok(output) => {
+                if output.contains("DENIED") || output.contains("No permission") {
+                    self.loop_state.last_tool_failed = true;
+                    let wrapped = format!(
+                        "[TOOL_DENIED] Tool '{}' was denied: {}. \
+                        Do NOT retry this exact call. Explain what was blocked \
+                        and suggest an alternative approach or ask the user for guidance.",
+                        tool_name, output
+                    );
+                    return Ok(wrapped);
+                }
                 self.loop_state.last_tool_failed = false;
                 Ok(output)
             }
@@ -482,6 +509,11 @@ impl Agent2 {
         loop {
             self.loop_state.iteration += 1;
 
+            // Prevent hammering the LLM between iterations
+            if self.loop_state.iteration > 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+
             if self.loop_state.iteration > self.loop_config.max_iterations {
                 let msg = format!(
                     "Iteration budget exhausted after {} steps. \
@@ -529,15 +561,17 @@ impl Agent2 {
                     self.context.append(Message::tool(&tool_result))?;
                 }
 
-                let final_response = self.llm.chat(llm_messages, None).await?;
-                let final_text = final_response.choices[0].message.content.clone()
-                    .unwrap_or_else(|| "Operation completed.".into());
+                // Append assistant's tool-calling decision to context
+                self.context.append(Message::assistant(
+                    &format!("Called tools: {}",
+                        tool_calls.iter().map(|tc| tc.function.name.clone()).collect::<Vec<_>>().join(", "))
+                ))?;
 
-                self.context.append(Message::assistant(&final_text))?;
-                self.session_store.append_message(&self.session_id, "assistant", &final_text)?;
-                return Ok(AgentResponse::Text(final_text));
+                // CONTINUE the loop — next iteration sees tool results in context
+                continue;
             }
 
+            // No tool calls → final answer, exit loop
             let text = choice.message.content.clone()
                 .unwrap_or_else(|| "I don't have a response for that.".into());
             self.context.append(Message::assistant(&text))?;
