@@ -218,10 +218,9 @@ impl Agent1 {
 
                 let wrapped = format!(
                     "[TOOL_ERROR] Tool '{}' failed with error: {}. \
-                    Do NOT retry the same call blindly. Consider alternative strategies.",
+                     Do NOT retry the same call blindly. Consider alternative strategies.",
                     tool_name, e
                 );
-                self.context.append(Message::tool(&wrapped))?;
                 Ok(wrapped)
             }
         }
@@ -563,10 +562,9 @@ impl Agent2 {
 
                 let wrapped = format!(
                     "[TOOL_ERROR] Tool '{}' failed with error: {}. \
-                    Do NOT retry the same call blindly. Consider alternative strategies.",
+                     Do NOT retry the same call blindly. Consider alternative strategies.",
                     tool_name, e
                 );
-                self.context.append(Message::tool(&wrapped))?;
                 Ok(wrapped)
             }
         }
