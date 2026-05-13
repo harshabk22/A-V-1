@@ -15,6 +15,8 @@ pub struct Message {
     pub role: Role,
     pub content: String,
     pub timestamp: u64,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
@@ -23,6 +25,7 @@ impl Message {
             role: Role::System,
             content: content.into(),
             timestamp: Self::now(),
+            tool_call_id: None,
         }
     }
 
@@ -31,6 +34,7 @@ impl Message {
             role: Role::User,
             content: content.into(),
             timestamp: Self::now(),
+            tool_call_id: None,
         }
     }
 
@@ -39,6 +43,7 @@ impl Message {
             role: Role::Assistant,
             content: content.into(),
             timestamp: Self::now(),
+            tool_call_id: None,
         }
     }
 
@@ -47,6 +52,16 @@ impl Message {
             role: Role::Tool,
             content: content.into(),
             timestamp: Self::now(),
+            tool_call_id: None,
+        }
+    }
+
+    pub fn tool_with_id(content: impl Into<String>, tool_call_id: String) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            timestamp: Self::now(),
+            tool_call_id: Some(tool_call_id),
         }
     }
 

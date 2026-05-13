@@ -104,6 +104,7 @@ impl Agent1 {
                 role,
                 content: msg.content.clone(),
                 timestamp: msg.timestamp as u64,
+                tool_call_id: None,
             })?;
         }
 
@@ -319,12 +320,12 @@ impl Agent1 {
 
                     if tool_result.starts_with("[LOOP_STOP]") {
                         llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
-                        self.context.append(Message::tool(&tool_result))?;
+                        self.context.append(Message::tool_with_id(&tool_result, tool_call.id.clone()))?;
                         return Ok(AgentResponse::Text(tool_result));
                     }
 
                     llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
-                    self.context.append(Message::tool(&tool_result))?;
+                    self.context.append(Message::tool_with_id(&tool_result, tool_call.id.clone()))?;
                 }
 
                 // Append assistant's tool-calling decision to context
@@ -359,7 +360,7 @@ impl Agent1 {
                 LlmMessage {
                     role: role.into(),
                     content: m.content,
-                    tool_call_id: None,
+                    tool_call_id: m.tool_call_id,
                     tool_calls: None,
                 }
             })
@@ -448,6 +449,7 @@ impl Agent2 {
                 role,
                 content: msg.content.clone(),
                 timestamp: msg.timestamp as u64,
+                tool_call_id: None,
             })?;
         }
 
@@ -654,12 +656,12 @@ impl Agent2 {
 
                     if tool_result.starts_with("[LOOP_STOP]") {
                         llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
-                        self.context.append(Message::tool(&tool_result))?;
+                        self.context.append(Message::tool_with_id(&tool_result, tool_call.id.clone()))?;
                         return Ok(AgentResponse::Text(tool_result));
                     }
 
                     llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
-                    self.context.append(Message::tool(&tool_result))?;
+                    self.context.append(Message::tool_with_id(&tool_result, tool_call.id.clone()))?;
                 }
 
                 // Append assistant's tool-calling decision to context
@@ -694,7 +696,7 @@ impl Agent2 {
                 LlmMessage {
                     role: role.into(),
                     content: m.content,
-                    tool_call_id: None,
+                    tool_call_id: m.tool_call_id,
                     tool_calls: None,
                 }
             })
