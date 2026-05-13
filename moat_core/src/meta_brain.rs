@@ -199,7 +199,16 @@ fn tokenize_query(query: &str) -> Vec<String> {
 }
 
 fn path_chain(path: &str) -> Vec<(String, String)> {
-    let canonical = Path::new(path);
+    let expanded = if path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            home.to_string_lossy().into_owned() + &path[1..]
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    };
+    let canonical = Path::new(&expanded);
     if !canonical.is_absolute() {
         return Vec::new();
     }
