@@ -1,6 +1,10 @@
 use super::types::{ChatRequest, ChatResponse, LlmMessage, LlmProvider, ToolDefinition};
 use anyhow::{Context, Result, bail};
 use reqwest::Client;
+use std::time::Duration;
+
+const MAX_RETRIES: u32 = 3;
+const INITIAL_BACKOFF_MS: u64 = 500;
 
 pub struct LlmClient {
     provider: LlmProvider,
@@ -30,6 +34,61 @@ impl LlmClient {
         Ok(Self { provider, model, api_key, http })
     }
 
+    fn is_retryable(status: u16) -> bool {
+        matches!(status, 429 | 502 | 503 | 504)
+    }
+
+    async fn send_with_retry(&self, url: &str, request: &ChatRequest) -> Result<ChatResponse> {
+        let mut last_error = String::new();
+
+        for attempt in 0..=MAX_RETRIES {
+            let response = self.http
+                .post(url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(request)
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        let parsed: ChatResponse = resp.json().await
+                            .context("Failed to parse LLM response")?;
+                        if parsed.choices.is_empty() {
+                            bail!("LLM returned empty choices array");
+                        }
+                        return Ok(parsed);
+                    }
+
+                    let status_code = status.as_u16();
+                    let error_body = resp.text().await.unwrap_or_default();
+                    last_error = format!("LLM API error {}: {}", status_code, error_body);
+
+                    if !Self::is_retryable(status_code) || attempt == MAX_RETRIES {
+                        bail!("{}", last_error);
+                    }
+                }
+                Err(e) => {
+                    last_error = format!("{}", e);
+
+                    if attempt == MAX_RETRIES {
+                        bail!("Failed to send request to LLM provider after {} retries: {}", MAX_RETRIES, last_error);
+                    }
+                }
+            }
+
+            if attempt < MAX_RETRIES {
+                let delay = Duration::from_millis(INITIAL_BACKOFF_MS * 2u64.pow(attempt));
+                eprintln!("[LlmClient] Retry {}/{} in {:?}: {}", attempt + 1, MAX_RETRIES, delay, last_error);
+                tokio::time::sleep(delay).await;
+            }
+        }
+
+        Err(anyhow::anyhow!("{}", last_error))
+    }
+
     /// Single chat completion call (non-streaming)
     pub async fn chat(
         &self,
@@ -46,30 +105,7 @@ impl LlmClient {
             max_tokens: 4096,
         };
 
-        let response = self.http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send request to LLM provider")?;
-
-        let status = response.status();
-
-        if !status.is_success() {
-            let error_body = response.text().await.unwrap_or_default();
-            bail!("LLM API error {}: {}", status, error_body);
-        }
-
-        let parsed: ChatResponse = response.json().await
-            .context("Failed to parse LLM response")?;
-
-        if parsed.choices.is_empty() {
-            bail!("LLM returned empty choices array");
-        }
-
-        Ok(parsed)
+        self.send_with_retry(&url, &request).await
     }
 
     /// Minimal single-shot completion for LLM router fallback
@@ -85,28 +121,7 @@ impl LlmClient {
             max_tokens: 10,
         };
 
-        let response = self.http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send request to LLM provider for simple completion")?;
-
-        let status = response.status();
-
-        if !status.is_success() {
-            let error_body = response.text().await.unwrap_or_default();
-            bail!("LLM API error {}: {}", status, error_body);
-        }
-
-        let parsed: ChatResponse = response.json().await
-            .context("Failed to parse LLM simple completion response")?;
-
-        if parsed.choices.is_empty() {
-            bail!("LLM returned empty choices array");
-        }
+        let parsed = self.send_with_retry(&url, &request).await?;
 
         Ok(parsed.choices[0].message.content.clone().unwrap_or_default())
     }
