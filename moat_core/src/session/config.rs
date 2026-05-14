@@ -13,10 +13,20 @@ impl AgentConfig {
     }
 
     fn load_prompt(agent_name: &str) -> Result<String> {
-        let paths = vec![
-            PathBuf::from(format!("agents/{}.md", agent_name)),
-            PathBuf::from(format!("moat_core/agents/{}.md", agent_name)),
-        ];
+        let root_path = PathBuf::from(format!("agents/{}.md", agent_name));
+        let crate_path = PathBuf::from(format!("moat_core/agents/{}.md", agent_name));
+
+        // Warn when the root copy shadows the (richer) crate copy
+        if root_path.exists() && crate_path.exists() {
+            eprintln!(
+                "[Config] WARNING: agents/{}.md shadows moat_core/agents/{}.md — \
+                the crate copy has richer persona content that is being ignored. \
+                Consider consolidating to a single source.",
+                agent_name, agent_name
+            );
+        }
+
+        let paths = [&root_path, &crate_path];
 
         for path in &paths {
             if path.exists() {
