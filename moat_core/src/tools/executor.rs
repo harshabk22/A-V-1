@@ -382,7 +382,11 @@ impl ToolExecutor {
         let p = Path::new(&expanded);
         if p.is_absolute() {
             if let Ok(canonical) = std::fs::canonicalize(&expanded) {
-                canonical.to_string_lossy().into_owned()
+                let canonical_str = canonical.to_string_lossy().into_owned();
+                if canonical_str != expanded {
+                    eprintln!("[ToolExecutor] Path canonicalized via symlink: {} -> {}", expanded, canonical_str);
+                }
+                canonical_str
             } else {
                 expanded
             }
