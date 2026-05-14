@@ -40,13 +40,4 @@ impl Router {
             decision
         }
     }
-
-    pub fn make_delegation_decision(reason: &str) -> RouteDecision {
-        RouteDecision {
-            target: RouteTarget::Agent2,
-            confidence: 1.0,
-            method: RouteMethod::Delegation,
-            reason: format!("Agent1 delegated: {}", reason),
-        }
-    }
 }
