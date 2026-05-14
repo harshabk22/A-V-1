@@ -92,23 +92,23 @@ impl ContextStore {
     }
 
     pub fn append(&self, message: Message) -> Result<()> {
-        let mut msgs = self.messages.lock().unwrap();
+        let mut msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
         msgs.push(message);
         Ok(())
     }
 
     pub fn get_all(&self) -> Vec<Message> {
-        self.messages.lock().unwrap().clone()
+        self.messages.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn replace_all(&self, messages: Vec<Message>) -> Result<()> {
-        let mut msgs = self.messages.lock().unwrap();
+        let mut msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
         *msgs = messages;
         Ok(())
     }
 
     pub fn count(&self) -> usize {
-        self.messages.lock().unwrap().len()
+        self.messages.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Maximum size of the primary system message before addenda overflow
@@ -116,7 +116,7 @@ impl ContextStore {
     const MAX_SYSTEM_PROMPT_SIZE: usize = 8000;
 
     pub fn prepend_system_addendum(&self, addendum: &str) -> Result<()> {
-        let mut msgs = self.messages.lock().unwrap();
+        let mut msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(first) = msgs.first() {
             if first.role == Role::System && first.content.len() < MAX_SYSTEM_PROMPT_SIZE {
                 // Still has room — append to the first system message
