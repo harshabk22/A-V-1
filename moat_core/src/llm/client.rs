@@ -123,6 +123,8 @@ impl LlmClient {
 
         let parsed = self.send_with_retry(&url, &request).await?;
 
-        Ok(parsed.choices[0].message.content.clone().unwrap_or_default())
+        parsed.choices.first()
+            .map(|c| c.message.content.clone().unwrap_or_default())
+            .ok_or_else(|| anyhow::anyhow!("LLM router returned empty choices"))
     }
 }
