@@ -90,6 +90,7 @@ use llm::LlmClient;
 use tools::ToolExecutor;
 use session::SessionStore;
 use profile::ProfileStore;
+use trust_store::TrustStore;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -103,6 +104,7 @@ pub struct System {
     tool_executor_agent2: Option<ToolExecutor>,
     session_store: Arc<SessionStore>,
     profile_store: Arc<ProfileStore>,
+    trust_store: Arc<TrustStore>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +156,10 @@ impl System {
                 (Arc::new(ss), Arc::new(ps))
             }
         };
+
+        let trust_store = Arc::new(TrustStore::new());
+        trust_store.register_builtin_worker("agent1");
+        trust_store.register_builtin_worker("agent2");
 
         let meta_brain = Arc::new(Mutex::new(MetaBrain::new()));
 
@@ -219,6 +225,7 @@ impl System {
             tool_executor_agent2,
             session_store,
             profile_store,
+            trust_store,
         })
     }
 
