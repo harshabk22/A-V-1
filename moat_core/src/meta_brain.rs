@@ -342,7 +342,14 @@ impl MetaBrain {
                 if !should_flush {
                     continue;
                 }
-                let _ = Self::flush_arc(Arc::clone(&brain)).await;
+                if let Err(e) = Self::flush_arc(Arc::clone(&brain)).await {
+                    eprintln!("[MetaBrain] Flush failed: {e}");
+                    // Retry after backoff — overwrite the dirty flag that was
+                    // cleared on failure path inside flush_arc
+                    if let Some(flush) = brain.read().await.flush.as_ref() {
+                        flush.dirty.store(true, Ordering::Release);
+                    }
+                }
             }
         });
     }
