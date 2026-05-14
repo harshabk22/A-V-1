@@ -112,6 +112,9 @@ impl Workspace {
 
 pub struct SwarmGateway {
     pub workspace: Arc<Workspace>,
+    /// NOTE: The Swarm subsystem uses `Arc<AsyncRwLock<MetaBrain>>` (tokio async RwLock),
+    /// separate from the agent path which uses `Arc<Mutex<MetaBrain>>` (std sync Mutex).
+    /// These are intentionally independent MetaBrain instances.
     pub brain: Arc<AsyncRwLock<MetaBrain>>,
     pub sessions: Arc<AsyncMutex<HashMap<Uuid, ReactSession>>>,
     pub provider_factory: Arc<dyn ProviderFactory>,

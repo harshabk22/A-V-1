@@ -161,6 +161,11 @@ impl System {
         trust_store.register_builtin_worker("agent1");
         trust_store.register_builtin_worker("agent2");
 
+        // NOTE: The Agent1/Agent2 path uses Arc<Mutex<MetaBrain>> (std sync Mutex)
+        // for the synchronous agent loop path. The Swarm subsystem uses
+        // Arc<AsyncRwLock<MetaBrain>> (tokio async RwLock) for its async workflow.
+        // These are intentionally SEPARATE MetaBrain instances — they do not share
+        // permission state between the agent path and the swarm path.
         let meta_brain = Arc::new(Mutex::new(MetaBrain::new()));
 
         {
