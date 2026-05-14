@@ -143,7 +143,9 @@ impl Agent1 {
             content: query.to_string(),
             timestamp: 0,
         }];
-        ProfileExtractor::extract_and_store(&recent, &self.session_id, &self.profile_store)?;
+        if let Err(e) = ProfileExtractor::extract_and_store(&recent, &self.session_id, &self.profile_store) {
+            eprintln!("[Agent] Profile extraction failed (non-blocking): {e}");
+        }
 
         self.check_and_compress_context()?;
 
@@ -493,7 +495,9 @@ impl Agent2 {
             content: query.to_string(),
             timestamp: 0,
         }];
-        ProfileExtractor::extract_and_store(&recent, &self.session_id, &self.profile_store)?;
+        if let Err(e) = ProfileExtractor::extract_and_store(&recent, &self.session_id, &self.profile_store) {
+            eprintln!("[Agent] Profile extraction failed (non-blocking): {e}");
+        }
 
         self.check_and_compress_context()?;
 
