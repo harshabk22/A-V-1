@@ -60,6 +60,9 @@ impl ToolExecutor {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_read requires 'path' argument"))?;
                 let resolved = Self::resolve_path(raw_path);
+                if Self::is_path_protected(Path::new(&resolved)) {
+                    return Ok(format!("[fs:read] DENIED: {} is a protected file", raw_path));
+                }
                 if !self.check_path_permission(PermissionFlags::FILE_READ, &resolved).await? {
                     return Ok(format!("[fs:read] DENIED: No permission to read {}", raw_path));
                 }
@@ -74,6 +77,9 @@ impl ToolExecutor {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_write requires 'path' argument"))?;
                 let resolved = Self::resolve_path(raw_path);
+                if Self::is_path_protected(Path::new(&resolved)) {
+                    return Ok(format!("[fs:write] DENIED: {} is a protected file", raw_path));
+                }
                 if !self.check_path_permission(PermissionFlags::FILE_WRITE, &resolved).await? {
                     return Ok(format!("[fs:write] DENIED: No permission to write {}", raw_path));
                 }
