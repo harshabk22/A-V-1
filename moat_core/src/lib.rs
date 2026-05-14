@@ -83,7 +83,7 @@ pub mod tools;
 pub mod profile;
 pub mod execution;
 
-use agent::{Agent1, Agent2, AgentResponse};
+use agent::{Agent, Agent1, Agent2, AgentResponse};
 use router::{Router, RouteTarget};
 use meta_brain::{MetaBrain, PermissionFlags};
 use llm::LlmClient;
@@ -186,7 +186,7 @@ impl System {
         }
 
         let llm1 = LlmClient::from_env()?;
-        let agent1 = Agent1::new(llm1, Arc::clone(&session_store), Arc::clone(&profile_store), resume)?;
+        let agent1 = Agent::new_agent1(llm1, Arc::clone(&session_store), Arc::clone(&profile_store), resume)?;
 
         let auto_deny = matches!(kind, AgentKind::Spotlight);
         let tool_executor_agent1 = ToolExecutor::new_with_auto_deny(
@@ -209,7 +209,7 @@ impl System {
                 let llm2 = LlmClient::from_env()?;
                 let llm_router = LlmClient::from_env()?;
 
-                let agent2 = Agent2::new(llm2, Arc::clone(&session_store), Arc::clone(&profile_store), resume)?;
+                let agent2 = Agent::new_agent2(llm2, Arc::clone(&session_store), Arc::clone(&profile_store), resume)?;
                 let tool_executor_agent2 = ToolExecutor::new(Arc::clone(&meta_brain), "agent2", Arc::clone(&session_store))?;
 
                 if resume {
