@@ -13,7 +13,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use tokio::sync::RwLock as AsyncRwLock;
+use tokio::sync::{Notify, RwLock as AsyncRwLock};
 use tokio::time::{sleep, Duration as TokioDuration};
 
 pub type NodeId = u64;
@@ -160,10 +160,10 @@ pub struct MetaBrainInner {
     next_id: NodeId,
 }
 
-#[derive(Clone)]
 struct FlushState {
     db_path: PathBuf,
     dirty: Arc<AtomicBool>,
+    notify: Arc<Notify>,
 }
 
 pub struct MetaBrain {
@@ -318,19 +318,33 @@ impl MetaBrain {
         self.flush = Some(FlushState {
             db_path,
             dirty: Arc::new(AtomicBool::new(true)),
+            notify: Arc::new(Notify::new()),
         });
     }
 
     fn mark_dirty(&self) {
         if let Some(flush) = &self.flush {
             flush.dirty.store(true, Ordering::Release);
+            flush.notify.notify_one();
         }
     }
 
     pub fn spawn_flush_loop(brain: Arc<AsyncRwLock<Self>>) {
         tokio::spawn(async move {
+            let notify = {
+                let brain = brain.read().await;
+                brain.flush.as_ref().map(|f| Arc::clone(&f.notify))
+            };
+            let Some(notify) = notify else { return; };
+
             loop {
-                sleep(TokioDuration::from_millis(250)).await;
+                // Wait for mark_dirty() to wake us, with a 250ms fallback
+                // in case the Notify was missed
+                tokio::select! {
+                    _ = notify.notified() => {}
+                    _ = sleep(TokioDuration::from_millis(250)) => {}
+                }
+
                 let should_flush = {
                     let brain = brain.read().await;
                     brain
