@@ -244,7 +244,7 @@ impl Agent1 {
             || user_query.to_lowercase().contains("command")
             || user_query.to_lowercase().contains("file")
         {
-            let details = crate::llm::tool_definitions::tool_schema_details();
+            let details = crate::llm::tool_definitions::tool_schema_details(AgentId::Agent1);
             self.context.prepend_system_addendum(&format!(
                 "\n## Tool Details (Extended)\n{}\n", details
             ))?;
@@ -596,7 +596,7 @@ impl Agent2 {
             || user_query.to_lowercase().contains("command")
             || user_query.to_lowercase().contains("file")
         {
-            let details = crate::llm::tool_definitions::tool_schema_details();
+            let details = crate::llm::tool_definitions::tool_schema_details(AgentId::Agent2);
             self.context.prepend_system_addendum(&format!(
                 "\n## Tool Details (Extended)\n{}\n", details
             ))?;

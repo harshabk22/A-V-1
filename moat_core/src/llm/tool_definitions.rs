@@ -1,4 +1,5 @@
 use super::types::{FunctionDefinition, ToolDefinition};
+use crate::agent::AgentId;
 use serde_json::json;
 
 /// Tools available to Agent1 (read-only)
@@ -257,8 +258,11 @@ pub fn tool_index_summary() -> String {
     lines.join("\n")
 }
 
-pub fn tool_schema_details() -> String {
-    let tools = agent2_tools();
+pub fn tool_schema_details(agent: AgentId) -> String {
+    let tools = match agent {
+        AgentId::Agent1 => agent1_tools(),
+        AgentId::Agent2 => agent2_tools(),
+    };
     let mut lines = Vec::new();
     for tool in &tools {
         let name = &tool.function.name;
@@ -285,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_tool_schema_details_includes_parameters() {
-        let details = tool_schema_details();
+        let details = tool_schema_details(AgentId::Agent2);
         assert!(details.contains("path"), "Missing path in: {}", details);
         assert!(details.contains("content") || details.contains("command"), "Missing params in: {}", details);
     }
