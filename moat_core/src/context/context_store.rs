@@ -111,11 +111,21 @@ impl ContextStore {
         self.messages.lock().unwrap().len()
     }
 
+    /// Maximum size of the primary system message before addenda overflow
+    /// to separate system messages instead of bloating the first one.
+    const MAX_SYSTEM_PROMPT_SIZE: usize = 8000;
+
     pub fn prepend_system_addendum(&self, addendum: &str) -> Result<()> {
         let mut msgs = self.messages.lock().unwrap();
-        if let Some(first) = msgs.first_mut() {
-            if first.role == Role::System {
-                first.content = format!("{}\n{}", first.content, addendum);
+        if let Some(first) = msgs.first() {
+            if first.role == Role::System && first.content.len() < MAX_SYSTEM_PROMPT_SIZE {
+                // Still has room — append to the first system message
+                if let Some(first_mut) = msgs.first_mut() {
+                    first_mut.content = format!("{}\n{}", first_mut.content, addendum);
+                }
+            } else {
+                // System prompt too large — insert a separate system-addendum message
+                msgs.insert(1, Message::system(format!("[System Addendum]\n{}", addendum)));
             }
         }
         Ok(())
