@@ -294,8 +294,13 @@ impl Agent1 {
 
                 for tool_call in tool_calls {
                     if tool_call.function.name == "delegate_to_executor" {
-                        let args: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
-                            .unwrap_or(serde_json::Value::Null);
+                        let args: serde_json::Value = match serde_json::from_str(&tool_call.function.arguments) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("[Agent1] Failed to parse delegate args: {}. Raw: {}", e, &tool_call.function.arguments);
+                                serde_json::Value::Null
+                            }
+                        };
                         let task = args["task"].as_str().unwrap_or("").to_string();
                         let reason = args["reason"].as_str().unwrap_or("requires execution").to_string();
                         println!("[Agent1] Delegating to Agent2: {}", task);

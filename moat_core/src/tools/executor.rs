@@ -52,8 +52,13 @@ impl ToolExecutor {
     }
 
     pub async fn execute(&mut self, tool_name: &str, args_json: &str) -> Result<String> {
-        let args: serde_json::Value = serde_json::from_str(args_json)
-            .unwrap_or(serde_json::Value::Null);
+        let args: serde_json::Value = match serde_json::from_str(args_json) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[ToolExecutor] Failed to parse tool args: {}. Raw: {}", e, args_json);
+                serde_json::Value::Null
+            }
+        };
 
         match tool_name {
             "fs_read" | "read_file" => {
