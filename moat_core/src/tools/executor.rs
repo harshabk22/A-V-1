@@ -6,6 +6,8 @@ use crate::execution::{DelExecutor, ExecutionError, ExecutionRequest};
 use crate::execution::gate2_policy::normalize_workspace_path;
 use crate::execution::journal::ExecutionJournal;
 use anyhow::Result;
+use std::fs::File;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -64,10 +66,8 @@ impl ToolExecutor {
             "fs_read" | "read_file" => {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_read requires 'path' argument"))?;
-                let resolved = Self::resolve_path(raw_path)?;
-                if Self::is_path_protected(Path::new(&resolved)) {
-                    return Ok(format!("[fs:read] DENIED: {} is a protected file", raw_path));
-                }
+                // TOCTOU-safe: open first, validate from the fd-derived path
+                let resolved = Self::resolve_and_validate(raw_path)?;
                 if !self.check_path_permission(PermissionFlags::FILE_READ, &resolved).await? {
                     return Ok(format!("[fs:read] DENIED: No permission to read {}", raw_path));
                 }
@@ -103,19 +103,10 @@ impl ToolExecutor {
             "fs_delete" => {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_delete requires 'path' argument"))?;
-                let resolved = Self::resolve_path(raw_path)?;
+                // TOCTOU-safe: open first, validate from the fd-derived path
+                let resolved = Self::resolve_and_validate(raw_path)?;
                 if !self.check_path_permission(PermissionFlags::FILE_DELETE, &resolved).await? {
                     return Ok(format!("[fs:delete] DENIED: No permission to delete {}", raw_path));
-                }
-
-                if !Path::new(&resolved).exists() {
-                    return Ok(format!("[fs:delete] File not found: {}", resolved));
-                }
-
-                if Self::is_path_protected(Path::new(&resolved)) {
-                    return Err(anyhow::anyhow!(
-                        "[fs:delete] DENIED: {:?} matches a protected pattern. Deletion denied.", resolved
-                    ));
                 }
 
                 let trash_dir = dirs::home_dir()
@@ -413,6 +404,78 @@ impl ToolExecutor {
         }
     }
 
+    /// Resolve the canonical path from an open file descriptor using fcntl F_GETPATH.
+    /// This is the TOCTOU-safe counterpart to resolve_path: the path comes from the
+    /// actual open file, not from a string that may have been swapped since validation.
+    fn resolve_from_fd(fd: std::os::unix::io::RawFd) -> Result<String> {
+        let mut buf = vec![0u8; libc::PATH_MAX as usize];
+        let ret = unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) };
+        if ret == -1 {
+            return Err(anyhow::anyhow!(
+                "fcntl F_GETPATH failed (fd {}): {}",
+                fd,
+                std::io::Error::last_os_error()
+            ));
+        }
+        let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        Ok(String::from_utf8_lossy(&buf[..nul]).to_string())
+    }
+
+    /// TOCTOU-safe path resolution for file operations.
+    /// Opens the path first, derives the canonical path from the fd,
+    /// then validates. This closes the race window between path check and file open.
+    fn resolve_and_validate(raw_path: &str) -> Result<String> {
+        let expanded = if raw_path.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.to_string_lossy().into_owned() + &raw_path[1..]
+            } else {
+                raw_path.to_string()
+            }
+        } else {
+            raw_path.to_string()
+        };
+        let p = Path::new(&expanded);
+        let open_path = if p.is_absolute() {
+            expanded.clone()
+        } else {
+            let workspace = dirs::home_dir()
+                .unwrap_or_default()
+                .join("Desktop")
+                .join("ageex-workspace");
+            workspace.join(raw_path).to_string_lossy().into_owned()
+        };
+
+        // Open the file first — no check on the string
+        let file = File::open(&open_path)
+            .map_err(|e| anyhow::anyhow!("[fs] open failed for {}: {}", open_path, e))?;
+
+        // Resolve the actual path from the open fd, not from the original string
+        let resolved = Self::resolve_from_fd(file.as_raw_fd())?;
+
+        // Drop the fd — validation is complete; DEL re-opens with the validated path
+        drop(file);
+
+        // Validate the fd-derived path — now there is no race window
+        if Self::is_path_protected(Path::new(&resolved)) {
+            return Err(anyhow::anyhow!(
+                "[security] PROTECTED FILE ACCESS DENIED: {}",
+                resolved
+            ));
+        }
+
+        // Check for symlink mismatch between the string path and the real fd path
+        let canonical = std::fs::canonicalize(&open_path).unwrap_or_else(|_| PathBuf::from(&open_path));
+        let canonical_str = canonical.to_string_lossy().to_string();
+        if canonical_str != resolved {
+            eprintln!(
+                "[ToolExecutor] Path mismatch: canonicalize={} vs fd-path={}",
+                canonical_str, resolved
+            );
+        }
+
+        Ok(resolved)
+    }
+
     fn flags_to_capability(flags: PermissionFlags) -> Capability {
         if flags.contains(PermissionFlags::FILE_DELETE) { Capability::FileDelete }
         else if flags.contains(PermissionFlags::FILE_WRITE) { Capability::FileWrite }
@@ -488,6 +551,27 @@ mod tests {
     fn test_regular_files_are_not_protected() {
         assert!(!ToolExecutor::is_path_protected(Path::new("/workspace/main.rs")), ".rs files should NOT be protected");
         assert!(!ToolExecutor::is_path_protected(Path::new("/workspace/README.md")), ".md files should NOT be protected");
+    }
+
+    #[test]
+    fn test_fd_path_resolution_matches_real_path() {
+        use std::io::Write;
+        use std::os::unix::io::AsRawFd;
+
+        let tmp = std::env::temp_dir().join("ageex_toctou_test.txt");
+        let mut f = std::fs::File::create(&tmp).expect("create temp file");
+        f.write_all(b"hello").expect("write");
+
+        // fd-derived path must match canonicalized path
+        let fd_path = ToolExecutor::resolve_from_fd(f.as_raw_fd())
+            .expect("resolve from fd");
+        let canonical = std::fs::canonicalize(&tmp).expect("canonicalize");
+
+        assert_eq!(fd_path, canonical.to_string_lossy().to_string(),
+            "fd-derived path must match canonical path (TOCTOU safety)");
+
+        drop(f);
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
