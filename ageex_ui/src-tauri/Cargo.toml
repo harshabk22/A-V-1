@@ -31,6 +31,9 @@ accessibility-sys = "0.2"
 core-foundation = "0.10"
 core-graphics-types = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
 # Link to our local Zero-Trust Kernel
 moat_core = { path = "../../moat_core" }
 ageex_reasoning = { path = "../../crates/ageex_reasoning" }
@@ -41,5 +44,4 @@ blake3 = "1"
 hex = "0.4"
 
 [features]
-default = ["whisper"]
-whisper = ["moat_core/whisper"]
+default = []

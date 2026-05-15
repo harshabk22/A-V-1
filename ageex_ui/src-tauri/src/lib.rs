@@ -2,6 +2,7 @@ mod context_scraper;
 mod ui_bridge_impl;
 mod ui_scraper;
 mod reasoning_bridge;
+mod overlay;
 
 use keyring::Entry;
 use moat_core::config::{
@@ -1026,11 +1027,14 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             if let Some(command_bar) = app.get_webview_window("command_bar") {
+                overlay::configure_overlay_panel(&command_bar);
+
                 let handle = command_bar.clone();
                 command_bar.on_window_event(move |event| {
                     if let tauri::WindowEvent::Focused(false) = event {
                         let handle = handle.clone();
                         tauri::async_runtime::spawn(async move {
+                            overlay::restore_frontmost_app();
                             let _ = handle.hide();
                         });
                     }
@@ -1049,6 +1053,7 @@ pub fn run() {
                         return;
                     }
                     if let Some(command_bar) = app_handle.get_webview_window("command_bar") {
+                        overlay::save_frontmost_app();
                         let (scraped, ui_elements) = context_scraper::scrape_os_context();
                         // Store scraped UI elements for os:click / os:type_text
                         if let Some(elements) = ui_elements {
