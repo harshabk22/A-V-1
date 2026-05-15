@@ -7,7 +7,10 @@ pub enum Capability {
     FileWrite,
     FileDelete,
     FileExists,
-    ProcessSpawn,
+    /// routes to sandbox-exec + Seatbelt profile
+    OsProcessSpawn,
+    /// routes to wasmtime instance pool, NEVER touches OS
+    AgentSpawn,
     AppOpen,
     UrlOpen,
     SkillExecute,
@@ -20,7 +23,8 @@ impl fmt::Display for Capability {
             Capability::FileWrite => write!(f, "fs:write"),
             Capability::FileDelete => write!(f, "fs:delete"),
             Capability::FileExists => write!(f, "fs:exists"),
-            Capability::ProcessSpawn => write!(f, "process:spawn"),
+            Capability::OsProcessSpawn => write!(f, "os:process_spawn"),
+            Capability::AgentSpawn => write!(f, "agent:spawn"),
             Capability::AppOpen => write!(f, "app:open"),
             Capability::UrlOpen => write!(f, "url:open"),
             Capability::SkillExecute => write!(f, "skill:execute"),
@@ -46,6 +50,7 @@ impl CapabilitySet {
         Self::new(vec![
             Capability::FileRead,
             Capability::FileExists,
+            Capability::OsProcessSpawn,
             Capability::AppOpen,
             Capability::UrlOpen,
         ])
@@ -56,7 +61,8 @@ impl CapabilitySet {
             Capability::FileRead,
             Capability::FileWrite,
             Capability::FileExists,
-            Capability::ProcessSpawn,
+            Capability::OsProcessSpawn,
+            Capability::AgentSpawn,
             Capability::AppOpen,
             Capability::UrlOpen,
             Capability::SkillExecute,

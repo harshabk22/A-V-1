@@ -440,7 +440,7 @@ impl ToolExecutor {
             "read_file" => Capability::FileRead,
             "write_file" => Capability::FileWrite,
             "delete_file" => Capability::FileDelete,
-            "process_spawn" => Capability::ProcessSpawn,
+            "process_spawn" => Capability::OsProcessSpawn,
             _ => Capability::FileRead,
         }
     }
@@ -599,7 +599,7 @@ impl ToolExecutor {
         if flags.contains(PermissionFlags::FILE_DELETE) { Capability::FileDelete }
         else if flags.contains(PermissionFlags::FILE_WRITE) { Capability::FileWrite }
         else if flags.contains(PermissionFlags::FILE_READ) { Capability::FileRead }
-        else if flags.contains(PermissionFlags::EXEC) { Capability::ProcessSpawn }
+        else if flags.contains(PermissionFlags::EXEC) { Capability::OsProcessSpawn }
         else { Capability::FileRead }
     }
 
@@ -621,7 +621,7 @@ mod tests {
         assert_eq!(ToolExecutor::tool_to_del_capability("delete_file"), Capability::FileDelete);
         assert_eq!(ToolExecutor::tool_to_del_capability("read_file"), Capability::FileRead);
         assert_eq!(ToolExecutor::tool_to_del_capability("write_file"), Capability::FileWrite);
-        assert_eq!(ToolExecutor::tool_to_del_capability("process_spawn"), Capability::ProcessSpawn);
+        assert_eq!(ToolExecutor::tool_to_del_capability("process_spawn"), Capability::OsProcessSpawn);
     }
 
     #[test]

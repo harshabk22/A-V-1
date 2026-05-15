@@ -168,7 +168,7 @@ mod tests {
         let req = ExecutionRequest::new(
             "agent2",
             "process_spawn",
-            Capability::ProcessSpawn,
+            Capability::OsProcessSpawn,
             serde_json::json!({"command": "rm -rf / --no-preserve-root"})
         );
         assert!(gate.enforce(&req).is_err());
