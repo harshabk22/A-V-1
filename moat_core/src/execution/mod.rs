@@ -8,6 +8,7 @@ pub mod error;
 pub mod spawn;
 pub mod loop_guard;
 pub mod journal_chain;
+pub mod replay;
 
 pub use request::ExecutionRequest;
 pub use result::ExecutionResult;
