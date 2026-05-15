@@ -5,6 +5,7 @@ pub mod execution_plan;
 pub mod external_api;
 pub mod gateway;
 pub mod gateway_transport;
+pub mod channel;
 pub mod hooks;
 pub mod injector;
 pub mod manifest;
