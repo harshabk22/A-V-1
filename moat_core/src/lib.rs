@@ -20,6 +20,7 @@ pub mod sandbox;
 pub mod sdk;
 pub mod server;
 pub mod skills;
+pub mod skill_graph;
 pub mod swarm;
 pub mod system;
 pub mod trust_store;
