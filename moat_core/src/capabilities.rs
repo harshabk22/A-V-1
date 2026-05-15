@@ -14,6 +14,10 @@ pub enum Capability {
     AppOpen,
     UrlOpen,
     SkillExecute,
+    /// Read channel history (AGX3-only)
+    SessionRead,
+    /// Reply within channel (AGX3-only)
+    SessionReply,
 }
 
 impl fmt::Display for Capability {
@@ -28,6 +32,8 @@ impl fmt::Display for Capability {
             Capability::AppOpen => write!(f, "app:open"),
             Capability::UrlOpen => write!(f, "url:open"),
             Capability::SkillExecute => write!(f, "skill:execute"),
+            Capability::SessionRead => write!(f, "session:read"),
+            Capability::SessionReply => write!(f, "session:reply"),
         }
     }
 }
@@ -71,5 +77,37 @@ impl CapabilitySet {
             Capability::UrlOpen,
             Capability::SkillExecute,
         ])
+    }
+
+    /// AGX3 default: zero OS capabilities.
+    /// AGX3 can only: read channel history, respond in-channel.
+    /// Cannot: touch filesystem, spawn processes, launch apps, open URLs.
+    pub fn agx3_default() -> Self {
+        Self::new(vec![
+            Capability::SessionRead,
+            Capability::SessionReply,
+        ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_agx3_has_zero_os_capabilities() {
+        let caps = CapabilitySet::agx3_default();
+        // AGX3 must NOT have any OS-touching capabilities
+        assert!(!caps.has(&Capability::FileRead), "AGX3 must not have FileRead");
+        assert!(!caps.has(&Capability::FileWrite), "AGX3 must not have FileWrite");
+        assert!(!caps.has(&Capability::FileDelete), "AGX3 must not have FileDelete");
+        assert!(!caps.has(&Capability::OsProcessSpawn), "AGX3 must not have OsProcessSpawn");
+        assert!(!caps.has(&Capability::AgentSpawn), "AGX3 must not have AgentSpawn");
+        assert!(!caps.has(&Capability::AppOpen), "AGX3 must not have AppOpen");
+        assert!(!caps.has(&Capability::UrlOpen), "AGX3 must not have UrlOpen");
+        assert!(!caps.has(&Capability::SkillExecute), "AGX3 must not have SkillExecute");
+        // AGX3 must have session-only capabilities
+        assert!(caps.has(&Capability::SessionRead), "AGX3 must have SessionRead");
+        assert!(caps.has(&Capability::SessionReply), "AGX3 must have SessionReply");
     }
 }

@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub enum AgentId {
     Agent1,
     Agent2,
+    Agent3,
 }
 
 pub enum AgentResponse {
@@ -82,6 +83,7 @@ impl Agent {
         match self.id {
             AgentId::Agent1 => "Agent1",
             AgentId::Agent2 => "Agent2",
+            AgentId::Agent3 => "AGX3",
         }
     }
 
@@ -89,10 +91,15 @@ impl Agent {
         matches!(self.id, AgentId::Agent1)
     }
 
+    fn is_connector(&self) -> bool {
+        matches!(self.id, AgentId::Agent3)
+    }
+
     fn prompt_load_fn(&self) -> fn() -> Result<String> {
         match self.id {
             AgentId::Agent1 => AgentConfig::load_agent1_prompt,
             AgentId::Agent2 => AgentConfig::load_agent2_prompt,
+            AgentId::Agent3 => AgentConfig::load_agent3_prompt,
         }
     }
 
@@ -100,6 +107,7 @@ impl Agent {
         match self.id {
             AgentId::Agent1 => CapabilitySet::agent1_default(),
             AgentId::Agent2 => CapabilitySet::agent2_default(),
+            AgentId::Agent3 => CapabilitySet::agx3_default(),
         }
     }
 
@@ -107,6 +115,7 @@ impl Agent {
         match self.id {
             AgentId::Agent1 => agent1_tools(),
             AgentId::Agent2 => agent2_tools(),
+            AgentId::Agent3 => vec![],  // AGX3: no tools, respond in-channel only
         }
     }
 
@@ -132,6 +141,19 @@ impl Agent {
         Self::new_inner(AgentId::Agent2, llm, session_store, profile_store, resume)
     }
 
+    /// Create a new AGX3 (Connector Agent).
+    /// AGX3 has zero OS capabilities — it can only read channel history
+    /// and reply within its channel. It cannot touch the filesystem,
+    /// spawn processes, or trigger AGX1/AGX2.
+    pub fn new_agent3(
+        llm: LlmClient,
+        session_store: Arc<SessionStore>,
+        profile_store: Arc<ProfileStore>,
+        resume: bool,
+    ) -> Result<Self> {
+        Self::new_inner(AgentId::Agent3, llm, session_store, profile_store, resume)
+    }
+
     fn new_inner(
         id: AgentId,
         llm: LlmClient,
@@ -142,15 +164,18 @@ impl Agent {
         let system_prompt = (match id {
             AgentId::Agent1 => AgentConfig::load_agent1_prompt,
             AgentId::Agent2 => AgentConfig::load_agent2_prompt,
+            AgentId::Agent3 => AgentConfig::load_agent3_prompt,
         })()?;
 
         let agent_prefix = match id {
             AgentId::Agent1 => "agent1",
             AgentId::Agent2 => "agent2",
+            AgentId::Agent3 => "agent3",
         };
         let label = match id {
             AgentId::Agent1 => "Agent1",
             AgentId::Agent2 => "Agent2",
+            AgentId::Agent3 => "AGX3",
         };
 
         let session_id = if resume {
@@ -206,6 +231,7 @@ impl Agent {
             capabilities: match id {
                 AgentId::Agent1 => CapabilitySet::agent1_default(),
                 AgentId::Agent2 => CapabilitySet::agent2_default(),
+                AgentId::Agent3 => CapabilitySet::agx3_default(),
             },
             id,
             context,

@@ -262,6 +262,7 @@ pub fn tool_schema_details(agent: AgentId) -> String {
     let tools = match agent {
         AgentId::Agent1 => agent1_tools(),
         AgentId::Agent2 => agent2_tools(),
+        AgentId::Agent3 => vec![],
     };
     let mut lines = Vec::new();
     for tool in &tools {
