@@ -22,6 +22,8 @@ pub mod sandbox;
 pub mod security;
 pub mod sdk;
 pub mod server;
+pub mod registry;
+pub mod events;
 pub mod skills;
 pub mod skill_graph;
 pub mod swarm;
