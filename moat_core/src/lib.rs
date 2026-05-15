@@ -18,6 +18,7 @@ pub mod plugins;
 // pub mod reflection;
 pub mod rule_store;
 pub mod sandbox;
+pub mod security;
 pub mod sdk;
 pub mod server;
 pub mod skills;
