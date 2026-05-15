@@ -187,6 +187,7 @@ impl Agent {
                 content: msg.content.clone(),
                 timestamp: msg.timestamp as u64,
                 tool_call_id: None,
+                tool_calls: None,
             })?;
         }
 
@@ -372,23 +373,16 @@ impl Agent {
             let choice = &response.choices[0];
 
             if let Some(tool_calls) = &choice.message.tool_calls {
-                let mut llm_messages = self.context_to_llm_messages();
+                let assistant_content = choice.message.content.clone().unwrap_or_default();
+                let tool_calls_clone = tool_calls.clone();
 
-                let assistant_msg = LlmMessage {
-                    role: "assistant".into(),
-                    content: choice.message.content.clone().unwrap_or_default(),
-                    tool_call_id: None,
-                    tool_calls: Some(tool_calls.clone()),
-                };
-                llm_messages.push(assistant_msg);
-
-                for tool_call in tool_calls {
-                    // Agent1-specific: delegate_to_executor handling
-                    if self.allows_delegation() && tool_call.function.name == "delegate_to_executor" {
-                        let args: serde_json::Value = match serde_json::from_str(&tool_call.function.arguments) {
+                // Handle Agent1 delegation early — exits before two-phase append
+                for tc in &tool_calls_clone {
+                    if self.allows_delegation() && tc.function.name == "delegate_to_executor" {
+                        let args: serde_json::Value = match serde_json::from_str(&tc.function.arguments) {
                             Ok(v) => v,
                             Err(e) => {
-                                eprintln!("[{}] Failed to parse delegate args: {}. Raw: {}", self.label(), e, &tool_call.function.arguments);
+                                eprintln!("[{}] Failed to parse delegate args: {}. Raw: {}", self.label(), e, &tc.function.arguments);
                                 serde_json::Value::Null
                             }
                         };
@@ -396,6 +390,21 @@ impl Agent {
                         let reason = args["reason"].as_str().unwrap_or("requires execution").to_string();
                         println!("[{}] Delegating to Agent2: {}", self.label(), task);
                         return Ok(AgentResponse::Delegation { task, reason });
+                    }
+                }
+
+                // Phase 1: execute ALL tools, collect results before touching context
+                let mut tool_results: Vec<(String, String)> = Vec::new();
+                let mut early_exit_text: Option<String> = None;
+
+                for tc in &tool_calls_clone {
+                    // PC-03: tool_call_id must be non-empty for valid tool-result pairing
+                    debug_assert!(!tc.id.is_empty(), "LLM returned tool_call with empty id");
+                    if tc.id.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "[{}] tool_call.id is empty — cannot create valid tool-result message",
+                            self.label()
+                        ));
                     }
 
                     self.loop_state.tool_calls += 1;
@@ -408,27 +417,42 @@ impl Agent {
                         return Ok(AgentResponse::Text(msg));
                     }
 
-                    let tool_result = self.safe_execute_tool(
-                        &tool_call.function.name,
-                        &tool_call.function.arguments,
+                    let result = self.safe_execute_tool(
+                        &tc.function.name,
+                        &tc.function.arguments,
                         tool_executor,
-                    ).await?;
+                    ).await
+                    .unwrap_or_else(|e| {
+                        format!("[tool_error] {}: {}", tc.function.name, e)
+                    });
 
-                    if tool_result.starts_with("[LOOP_STOP]") {
-                        llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
-                        self.context.append(Message::tool_with_id(&tool_result, tool_call.id.clone()))?;
-                        return Ok(AgentResponse::Text(tool_result));
+                    if result.starts_with("[LOOP_STOP]") {
+                        // Record the stop result but continue collecting remaining
+                        // tool results so context stays protocol-clean
+                        early_exit_text = Some(result.clone());
                     }
 
-                    llm_messages.push(LlmMessage::tool_result(&tool_call.id, &tool_result));
-                    self.context.append(Message::tool_with_id(&tool_result, tool_call.id.clone()))?;
+                    tool_results.push((tc.id.clone(), result));
                 }
 
-                // Append assistant's tool-calling decision to context
-                self.context.append(Message::assistant(
-                    &format!("Called tools: {}",
-                        tool_calls.iter().map(|tc| tc.function.name.clone()).collect::<Vec<_>>().join(", "))
+                // Phase 2: atomic append — assistant FIRST, then ALL tool results
+                self.context.append(Message::assistant_with_tool_calls(
+                    assistant_content,
+                    tool_calls_clone.clone(),
                 ))?;
+
+                let mut llm_messages = self.context_to_llm_messages();
+
+                for (call_id, result) in &tool_results {
+                    llm_messages.push(LlmMessage::tool_result(call_id, result));
+                    self.context.append(Message::tool_result(call_id.clone(), result))?;
+                    self.session_store.append_message(&self.session_id, "tool", result)?;
+                }
+
+                // If a [LOOP_STOP] was encountered, return it after the atomic append
+                if let Some(stop_text) = early_exit_text {
+                    return Ok(AgentResponse::Text(stop_text));
+                }
 
                 // CONTINUE the loop — next iteration sees tool results in context
                 continue;
