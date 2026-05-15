@@ -2,6 +2,7 @@ use crate::capabilities::Capability;
 use crate::meta_brain::{MetaBrain, PermissionFlags};
 use crate::approval::{ApprovalFlow, ApprovalRequest, ApprovalDecision};
 use crate::session::SessionStore;
+use crate::consent::ConsentBridge;
 use crate::execution::{DelExecutor, ExecutionError, ExecutionRequest};
 use crate::execution::gate2_policy::normalize_workspace_path;
 use crate::execution::journal::ExecutionJournal;
@@ -20,6 +21,7 @@ pub struct ToolExecutor {
     del: DelExecutor,
     journal: ExecutionJournal,
     auto_deny: bool,
+    consent_bridge: Option<Arc<ConsentBridge>>,
 }
 
 impl ToolExecutor {
@@ -37,6 +39,25 @@ impl ToolExecutor {
         session_store: Arc<SessionStore>,
         auto_deny: bool,
     ) -> Result<Self> {
+        Self::build(meta_brain, agent_id, session_store, auto_deny, None)
+    }
+
+    pub fn new_with_consent(
+        meta_brain: Arc<Mutex<MetaBrain>>,
+        agent_id: impl Into<String>,
+        session_store: Arc<SessionStore>,
+        consent_bridge: Arc<ConsentBridge>,
+    ) -> Result<Self> {
+        Self::build(meta_brain, agent_id, session_store, false, Some(consent_bridge))
+    }
+
+    fn build(
+        meta_brain: Arc<Mutex<MetaBrain>>,
+        agent_id: impl Into<String>,
+        session_store: Arc<SessionStore>,
+        auto_deny: bool,
+        consent_bridge: Option<Arc<ConsentBridge>>,
+    ) -> Result<Self> {
         let del = DelExecutor::new()?;
         let journal = ExecutionJournal::open()
             .unwrap_or_else(|e| {
@@ -50,6 +71,7 @@ impl ToolExecutor {
             del,
             journal,
             auto_deny,
+            consent_bridge,
         })
     }
 
@@ -103,6 +125,19 @@ impl ToolExecutor {
             "fs_delete" => {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_delete requires 'path' argument"))?;
+                // Destructive operation: require consent before proceeding
+                if let Some(bridge) = &self.consent_bridge {
+                    let approved = bridge.request_consent(
+                        "fs:delete",
+                        &format!("Delete file: {}", raw_path),
+                    ).await;
+                    if !approved {
+                        return Ok(format!(
+                            "[fs:delete] DENIED: consent not granted for {}",
+                            raw_path
+                        ));
+                    }
+                }
                 // TOCTOU-safe: open first, validate from the fd-derived path
                 let resolved = Self::resolve_and_validate(raw_path)?;
                 if !self.check_path_permission(PermissionFlags::FILE_DELETE, &resolved).await? {
@@ -142,6 +177,18 @@ impl ToolExecutor {
             "app_open" => {
                 let app_name = args["app_name"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("app_open requires 'app_name' argument"))?;
+                if let Some(bridge) = &self.consent_bridge {
+                    let approved = bridge.request_consent(
+                        "app:open",
+                        &format!("Open application: {}", app_name),
+                    ).await;
+                    if !approved {
+                        return Ok(format!(
+                            "[app:open] DENIED: consent not granted for {}",
+                            app_name
+                        ));
+                    }
+                }
                 if !self.check_app_permission(app_name).await? {
                     return Ok(format!("[app:open] DENIED: No permission to open {}", app_name));
                 }
@@ -150,6 +197,18 @@ impl ToolExecutor {
             "url_open" => {
                 let url = args["url"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("url_open requires 'url' argument"))?;
+                if let Some(bridge) = &self.consent_bridge {
+                    let approved = bridge.request_consent(
+                        "url:open",
+                        &format!("Open URL: {}", url),
+                    ).await;
+                    if !approved {
+                        return Ok(format!(
+                            "[url:open] DENIED: consent not granted for {}",
+                            url
+                        ));
+                    }
+                }
                 if !self.check_url_permission(url).await? {
                     return Ok(format!("[url:open] DENIED: No permission to open {}", url));
                 }
@@ -572,6 +631,80 @@ mod tests {
 
         drop(f);
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_destructive_fs_delete_requires_consent() {
+        use std::io::Write;
+        use crate::consent::{ConsentBridge, ConsentDecision};
+
+        let tmp = std::env::temp_dir().join("ageex_consent_test_delete.txt");
+        let mut f = std::fs::File::create(&tmp).expect("create temp file");
+        f.write_all(b"delete me").expect("write");
+        drop(f);
+
+        // Build a consent bridge that auto-denies (no UI roundtrip).
+        // Pattern from orchestrator::tests::consent_bridge_with_policy.
+        let (bridge_slot, bridge) = {
+            let slot: Arc<Mutex<Option<std::sync::Weak<ConsentBridge>>>> =
+                Arc::new(Mutex::new(None));
+            let slot_for_emit = Arc::clone(&slot);
+            let bridge = Arc::new(ConsentBridge::new(Box::new(move |req| {
+                let weak = slot_for_emit.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+                    .expect("bridge stored before emit");
+                let req_id = req.request_id.clone();
+                std::thread::spawn(move || {
+                    if let Some(bridge) = weak.upgrade() {
+                        let _ = bridge.resolve(&req_id, ConsentDecision::Deny);
+                    }
+                });
+            })));
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::downgrade(&bridge));
+            (slot, bridge)
+        };
+
+        let brain = Arc::new(Mutex::new(MetaBrain::new()));
+        let store = SessionStore::open_with_prefix_in_memory("test_consent_delete")
+            .expect("test store");
+        let store = Arc::new(store);
+        brain.lock().unwrap().grant_path_permission(
+            &tmp.to_string_lossy(),
+            PermissionFlags::FILE_DELETE,
+        ).expect("grant delete");
+
+        let mut exec = ToolExecutor::new_with_consent(
+            Arc::clone(&brain),
+            "agent2",
+            Arc::clone(&store),
+            Arc::clone(&bridge),
+        ).expect("create executor");
+
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let json = format!(r#"{{"path":"{}"}}"#, tmp.to_string_lossy());
+        let result = rt.block_on(exec.execute("fs_delete", &json));
+
+        match result {
+            Ok(output) => {
+                assert!(
+                    output.contains("DENIED") || output.contains("denied") || output.contains("consent"),
+                    "fs_delete without consent should be denied: {}",
+                    output
+                );
+            }
+            Err(e) => {
+                assert!(
+                    e.to_string().contains("consent") || e.to_string().contains("denied"),
+                    "Error should mention consent denial: {}",
+                    e
+                );
+            }
+        }
+
+        let _ = std::fs::remove_file(&tmp);
+        // Keep slot alive to prevent bridge drop during test
+        drop(bridge_slot);
     }
 
     #[test]
