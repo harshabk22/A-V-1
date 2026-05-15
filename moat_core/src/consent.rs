@@ -11,6 +11,7 @@ use crate::orchestrator::ActionIntent;
 use crate::rule_store::RuleConflictReview;
 use crate::skills::{sha256_hex, SkillProposal};
 use crate::types::{IntentPayload, TypedIntent};
+use crate::execution::journal_chain::{ChainJournal, JournalOperation};
 use crate::{MoatError, MoatResult};
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -69,9 +70,11 @@ pub struct ConsentBridge {
     /// Pending user:ask_choice requests — oneshot resolves with the selected option string.
     choice_pending: Mutex<HashMap<String, oneshot::Sender<String>>>,
     emit: EmitFn,
+    chain_journal: Mutex<Option<ChainJournal>>,
 }
 
 #[derive(Serialize)]
+
 struct GenericConsentPayload<'a> {
     action: &'a str,
     payload: &'a str,
@@ -171,6 +174,19 @@ impl ConsentBridge {
             pending: Mutex::new(HashMap::new()),
             choice_pending: Mutex::new(HashMap::new()),
             emit,
+            chain_journal: Mutex::new(None),
+        }
+    }
+
+    pub fn with_chain_journal(mut self) -> Result<Self, String> {
+        let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
+        let path = home.join(".ageex").join("chain.journal");
+        match ChainJournal::open(&path) {
+            Ok(journal) => {
+                self.chain_journal = Mutex::new(Some(journal));
+                Ok(self)
+            }
+            Err(e) => Err(format!("Failed to open chain journal: {}", e)),
         }
     }
 
@@ -309,6 +325,29 @@ impl ConsentBridge {
             Ok(mut map) => map.remove(request_id),
             Err(poison) => return Err(format!("[ConsentBridge] mutex poisoned: {poison}")),
         };
+
+        // Chain-journal every consent decision
+        if let Ok(mut journal_guard) = self.chain_journal.lock() {
+            if let Some(ref mut journal) = *journal_guard {
+                let op = match decision {
+                    ConsentDecision::ApproveOnce | ConsentDecision::CreatePermanentPolicy => {
+                        JournalOperation::Allow {
+                            tool_name: "consent".into(),
+                            args: format!("request_id={}", request_id),
+                        }
+                    }
+                    ConsentDecision::Deny => {
+                        JournalOperation::Deny {
+                            tool_name: "consent".into(),
+                            reason: format!("Denied request_id={}", request_id),
+                        }
+                    }
+                };
+                if let Err(e) = journal.append("consent_bridge".into(), op) {
+                    eprintln!("[ConsentBridge] Chain journal append failed: {}", e);
+                }
+            }
+        }
 
         match tx {
             Some(sender) => {

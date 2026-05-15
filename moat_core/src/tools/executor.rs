@@ -7,22 +7,20 @@ use crate::execution::{DelExecutor, ExecutionError, ExecutionRequest};
 use crate::execution::gate2_policy::normalize_workspace_path;
 use crate::execution::journal::ExecutionJournal;
 use anyhow::Result;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
-use uuid::Uuid;
 
 pub struct ToolExecutor {
-    meta_brain: Arc<Mutex<MetaBrain>>,
-    agent_id: String,
-    session_store: Arc<SessionStore>,
-    del: DelExecutor,
-    journal: ExecutionJournal,
-    auto_deny: bool,
-    consent_bridge: Option<Arc<ConsentBridge>>,
+    pub meta_brain: Arc<Mutex<MetaBrain>>,
+    pub agent_id: String,
+    pub session_store: Arc<SessionStore>,
+    pub del: DelExecutor,
+    pub journal: ExecutionJournal,
+    pub auto_deny: bool,
+    pub consent_bridge: Option<Arc<ConsentBridge>>,
 }
 
 impl ToolExecutor {
@@ -99,7 +97,11 @@ impl ToolExecutor {
             "fs_exists" => {
                 let path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_exists requires 'path' argument"))?;
-                Ok(format!("[fs:exists] {} → {}", path, Path::new(path).exists()))
+                let resolved = Self::resolve_path(path)?;
+                if !self.check_path_permission(PermissionFlags::FILE_READ, &resolved).await? {
+                    return Ok(format!("[fs:exists] DENIED: No permission to read {}", path));
+                }
+                self.execute_del("fs_exists", args)
             }
             "fs_write" | "write_file" => {
                 let raw_path = args["path"].as_str()
@@ -159,22 +161,7 @@ impl ToolExecutor {
                     return Ok(format!("[fs:delete] DENIED: No permission to delete {}", raw_path));
                 }
 
-                let trash_dir = dirs::home_dir()
-                    .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-                    .join(".ageex").join("trash");
-                std::fs::create_dir_all(&trash_dir)?;
-
-                let original_name = Path::new(&resolved)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
-                let trash_name = format!("{}_{}", Uuid::new_v4(), original_name);
-                let trash_path = trash_dir.join(&trash_name);
-
-                std::fs::rename(&resolved, &trash_path)
-                    .map_err(|e| anyhow::anyhow!("Delete failed: {}", e))?;
-
-                let result = format!("[fs:delete] Deleted {} (moved to trash: {:?})", resolved, trash_path);
+                let result = self.execute_del("fs_delete", args)?;
                 self.journal.log_entry(&self.agent_id, "delete_file", &resolved, true, &result);
                 Ok(result)
             }
@@ -220,7 +207,7 @@ impl ToolExecutor {
                 if !self.check_app_permission(app_name).await? {
                     return Ok(format!("[app:open] DENIED: No permission to open {}", app_name));
                 }
-                Self::execute_app_open(app_name)
+                self.execute_del("app_open", args)
             }
             "url_open" => {
                 let url = args["url"].as_str()
@@ -262,7 +249,7 @@ impl ToolExecutor {
                 if !self.check_url_permission(url).await? {
                     return Ok(format!("[url:open] DENIED: No permission to open {}", url));
                 }
-                Self::execute_url_open(url)
+                self.execute_del("url_open", args)
             }
             "skill_execute" => {
                 if self.agent_id == "agent1" {
@@ -278,6 +265,12 @@ impl ToolExecutor {
         }
     }
 
+    /// Execute an operation through DEL without MetaBrain permission checks.
+    /// Used by the orchestrator (which does its own MetaBrain checks).
+    pub fn execute_via_del(&self, del_tool_name: &str, args: serde_json::Value) -> Result<String> {
+        self.execute_del(del_tool_name, args)
+    }
+
     fn execute_del(&self, del_tool_name: &str, args: serde_json::Value) -> Result<String> {
         let capability = Self::tool_to_del_capability(del_tool_name);
         let request = ExecutionRequest::new(&self.agent_id, del_tool_name, capability, args);
@@ -289,6 +282,23 @@ impl ToolExecutor {
             Ok(result.output)
         } else {
             Ok(format!("Execution denied: {}", result.denied_reason.unwrap_or_default()))
+        }
+    }
+
+    pub(crate) fn tool_to_del_capability(tool_name: &str) -> Capability {
+        match tool_name {
+            "read_file" => Capability::FileRead,
+            "write_file" => Capability::FileWrite,
+            "delete_file" | "fs_delete" => Capability::FileDelete,
+            "process_spawn" => Capability::OsProcessSpawn,
+            "app_open" => Capability::AppOpen,
+            "url_open" => Capability::UrlOpen,
+            "applescript" => Capability::OsProcessSpawn,
+            "net_curl" => Capability::UrlOpen,
+            "inject_text" => Capability::OsProcessSpawn,
+            "fs_exists" => Capability::FileRead,
+            "skill_execute" => Capability::OsProcessSpawn,
+            _ => Capability::FileRead,
         }
     }
 
@@ -433,36 +443,6 @@ impl ToolExecutor {
             }
             ApprovalDecision::Denied | ApprovalDecision::TimedOut => Ok(false),
         }
-    }
-
-    pub(crate) fn tool_to_del_capability(tool_name: &str) -> Capability {
-        match tool_name {
-            "read_file" => Capability::FileRead,
-            "write_file" => Capability::FileWrite,
-            "delete_file" => Capability::FileDelete,
-            "process_spawn" => Capability::OsProcessSpawn,
-            _ => Capability::FileRead,
-        }
-    }
-
-    fn execute_app_open(app_name: &str) -> Result<String> {
-        Command::new("open").arg("-a").arg(app_name).output().map_or_else(
-            |e| Ok(format!("[app:open] ERROR: {}", e)),
-            |out| {
-                if out.status.success() {
-                    Ok(format!("[app:open] OK: {} launched", app_name))
-                } else {
-                    Ok(format!("[app:open] ERROR: {}", String::from_utf8_lossy(&out.stderr)))
-                }
-            },
-        )
-    }
-
-    fn execute_url_open(url: &str) -> Result<String> {
-        Command::new("open").arg(url).output().map_or_else(
-            |e| Ok(format!("[url:open] ERROR: {}", e)),
-            |_| Ok(format!("[url:open] OK: {} opened in browser", url)),
-        )
     }
 
     fn is_path_protected(path: &Path) -> bool {

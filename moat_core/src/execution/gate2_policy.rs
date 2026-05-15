@@ -17,6 +17,8 @@ pub struct ExecutionPolicy {
 
 impl Default for ExecutionPolicy {
     fn default() -> Self {
+        let home = dirs::home_dir().unwrap_or_default();
+        let workspace = home.join(".moatageex").join("workspace");
         Self {
             allow_network: false,
             allow_process_spawn: true,
@@ -29,6 +31,7 @@ impl Default for ExecutionPolicy {
             ],
             allowed_paths: vec![
                 "~/Desktop/ageex-workspace".into(),
+                workspace.to_string_lossy().to_string(),
             ],
             require_approval_for: vec![
                 "ProcessSpawn".into(),
@@ -38,6 +41,7 @@ impl Default for ExecutionPolicy {
     }
 }
 
+#[derive(Clone)]
 pub struct Gate2Policy {
     policy: ExecutionPolicy,
 }
@@ -96,7 +100,7 @@ impl Gate2Policy {
         }
 
         if !self.policy.allow_network
-            && (req.tool_name == "web_request" || req.tool_name == "url_open")
+            && (req.tool_name == "web_request" || req.tool_name == "url_open" || req.tool_name == "net_curl")
         {
             return Err(ExecutionResult::gate2_denied(
                 &req.request_id,
@@ -104,7 +108,10 @@ impl Gate2Policy {
             ));
         }
 
-        if !self.policy.allow_process_spawn && req.tool_name == "process_spawn" {
+        if !self.policy.allow_process_spawn
+            && (req.tool_name == "process_spawn" || req.tool_name == "app_open"
+                || req.tool_name == "applescript" || req.tool_name == "net_curl")
+        {
             return Err(ExecutionResult::gate2_denied(
                 &req.request_id,
                 "Process spawning disabled by policy"

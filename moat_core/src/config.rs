@@ -92,10 +92,6 @@ pub fn plugins_root() -> PathBuf {
     moat_root().join("plugins")
 }
 
-pub fn voice_model_path() -> PathBuf {
-    moat_root().join("models").join("ggml-base.en.bin")
-}
-
 pub fn sqlite_db_path() -> PathBuf {
     moat_root().join("moat.db")
 }

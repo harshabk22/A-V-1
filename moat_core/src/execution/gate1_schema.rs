@@ -58,6 +58,47 @@ impl Gate1Schema {
                     bail!("process_spawn requires 'command' (string)");
                 }
             },
+            "app_open" => {
+                if args.get("app_name").and_then(|v| v.as_str()).is_none() {
+                    bail!("app_open requires 'app_name' (string)");
+                }
+            },
+            "url_open" => {
+                if args.get("url").and_then(|v| v.as_str()).is_none() {
+                    bail!("url_open requires 'url' (string)");
+                }
+            },
+            "applescript" => {
+                if args.get("script").and_then(|v| v.as_str()).is_none() {
+                    bail!("applescript requires 'script' (string)");
+                }
+            },
+            "net_curl" => {
+                if args.get("url").and_then(|v| v.as_str()).is_none() {
+                    bail!("net_curl requires 'url' (string)");
+                }
+            },
+            "inject_text" => {
+                if args.get("text").and_then(|v| v.as_str()).is_none() {
+                    bail!("inject_text requires 'text' (string)");
+                }
+            },
+            "fs_exists" => {
+                if args.get("path").and_then(|v| v.as_str()).is_none() {
+                    bail!("fs_exists requires 'path' (string)");
+                }
+            },
+            "fs_delete" => {
+                if args.get("path").and_then(|v| v.as_str()).is_none() {
+                    bail!("fs_delete requires 'path' (string)");
+                }
+            },
+            "skill_execute" => {
+                if args.get("skill_name").and_then(|v| v.as_str()).is_none()
+                    && args.get("command").and_then(|v| v.as_str()).is_none() {
+                    bail!("skill_execute requires 'skill_name' or 'command' (string)");
+                }
+            },
             _ => {
                 // Unknown tool — pass through (allow dynamic tools)
             }

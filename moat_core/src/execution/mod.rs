@@ -22,6 +22,7 @@ use gate3_sandbox::Gate3Sandbox;
 use journal::ExecutionJournal;
 use anyhow::Result;
 
+#[derive(Clone)]
 pub struct DelExecutor {
     policy: Gate2Policy,
     journal: ExecutionJournal,

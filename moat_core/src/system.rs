@@ -274,7 +274,7 @@ mod tests {
             },
             Arc::clone(&meta_brain),
             Arc::clone(&db),
-        );
+        ).expect("test worker");
         let provider_factory: Arc<dyn ProviderFactory> = Arc::new(TestProviderFactory {
             provider: provider.clone(),
         });
@@ -853,8 +853,9 @@ impl MoatSystem {
                 Arc::clone(&meta_brain),
                 Arc::clone(&db),
                 bridge,
-            ),
-            None => WorkerAgent::new(worker_cfg, Arc::clone(&meta_brain), Arc::clone(&db)),
+            ).map_err(|e| MoatError::Orchestrator(e.to_string()))?,
+            None => WorkerAgent::new(worker_cfg, Arc::clone(&meta_brain), Arc::clone(&db))
+                .map_err(|e| MoatError::Orchestrator(e.to_string()))?,
         };
         let (swarm_gateway, default_swarm_agent, swarm_workspace_root) = Self::build_swarm_gateway(
             resolved_swarm_root,

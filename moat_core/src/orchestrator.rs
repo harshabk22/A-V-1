@@ -24,6 +24,9 @@ use uuid::Uuid;
 
 use crate::config;
 use crate::consent::ConsentBridge;
+use crate::execution::DelExecutor;
+use crate::execution::ExecutionRequest;
+use crate::capabilities::Capability;
 use crate::external_api::ExternalApiConfig;
 use crate::external_api::{missing_key_provider_from_error, provider_display_name};
 use crate::hooks::run_precompute_memory_hook;
@@ -1197,6 +1200,7 @@ pub struct WorkerAgent {
     pub db: Arc<AsyncMutex<Connection>>,
     pub consent_bridge: Option<Arc<ConsentBridge>>,
     pub ui_bridge: Option<Arc<dyn UiActionBridge>>,
+    pub del: DelExecutor,
 }
 
 impl WorkerAgent {
@@ -1204,14 +1208,17 @@ impl WorkerAgent {
         config: WorkerConfig,
         meta_brain: Arc<AsyncRwLock<MetaBrain>>,
         db: Arc<AsyncMutex<Connection>>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, anyhow::Error> {
+        let del = DelExecutor::new()
+            .map_err(|e| anyhow::anyhow!("[WorkerAgent] DEL initialization failed: {}", e))?;
+        Ok(Self {
             config,
             meta_brain,
             db,
             consent_bridge: None,
             ui_bridge: None,
-        }
+            del,
+        })
     }
 
     pub fn with_consent_bridge(
@@ -1219,19 +1226,32 @@ impl WorkerAgent {
         meta_brain: Arc<AsyncRwLock<MetaBrain>>,
         db: Arc<AsyncMutex<Connection>>,
         bridge: Arc<ConsentBridge>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, anyhow::Error> {
+        let del = DelExecutor::new()
+            .map_err(|e| anyhow::anyhow!("[WorkerAgent] DEL initialization failed: {}", e))?;
+        Ok(Self {
             config,
             meta_brain,
             db,
             consent_bridge: Some(bridge),
             ui_bridge: None,
-        }
+            del,
+        })
     }
 
     pub fn with_ui_bridge(mut self, bridge: Arc<dyn UiActionBridge>) -> Self {
         self.ui_bridge = Some(bridge);
         self
+    }
+
+    fn execute_del(&self, tool_name: &str, capability: Capability, args: serde_json::Value) -> Result<String, String> {
+        let request = ExecutionRequest::new("worker", tool_name, capability, args);
+        let result = self.del.execute(request);
+        if result.success {
+            Ok(result.output)
+        } else {
+            Err(result.denied_reason.unwrap_or_else(|| "Execution denied by DEL".to_string()))
+        }
     }
 
     fn curl_max_response_bytes(&self) -> usize {
@@ -1661,16 +1681,27 @@ impl WorkerAgent {
             }));
         }
 
-        let source_code = match fs::read_to_string(&skill.script_path) {
-            Ok(source) => source,
-            Err(err) => {
+        let source_code = match self.execute_del("read_file", Capability::FileRead, json!({"path": skill.script_path.to_string()})) {
+            Ok(output) => {
+                if output.starts_with("Execution denied:") {
+                    return Ok(Some(TaskStatus::Failed {
+                        exit_code: None,
+                        stderr: format!(
+                            "failed to read installed skill '{}' from vault: {}",
+                            skill.skill_name, output
+                        ),
+                    }));
+                }
+                output
+            }
+            Err(_e) => {
                 return Ok(Some(TaskStatus::Failed {
                     exit_code: None,
                     stderr: format!(
-                        "failed to read installed skill '{}' from vault: {}",
-                        skill.skill_name, err
+                        "failed to read installed skill '{}' from vault (DEL error): {}",
+                        skill.skill_name, _e
                     ),
-                }))
+                }));
             }
         };
 
@@ -1687,19 +1718,31 @@ impl WorkerAgent {
         let mut exec_args = vec![temp_script.absolute_path.to_string_lossy().into_owned()];
         exec_args.extend(args);
 
-        let subgraph = self.relevant_subgraph(root_node_id, intent).await?;
-        let status = sandbox_status_with_extra_paths(
-            interpreter,
-            &exec_args,
-            &subgraph,
-            vec![PathRule::read_write_recursive(
-                config::workspace_root().to_string_lossy().into_owned(),
-            )],
-            self.config.command_timeout,
-        )?;
+        let full_command = std::iter::once(interpreter.to_string())
+            .chain(exec_args.clone().into_iter())
+            .collect::<Vec<_>>()
+            .join(" ");
 
-        drop(temp_script);
-        Ok(Some(status))
+        match self.execute_del("skill_execute", Capability::OsProcessSpawn, json!({
+            "command": full_command,
+            "working_dir": config::workspace_root().to_string_lossy().to_string()
+        })) {
+            Ok(output) => {
+                drop(temp_script);
+                if output.starts_with("Execution denied:") {
+                    Ok(Some(TaskStatus::Failed { exit_code: None, stderr: output }))
+                } else {
+                    Ok(Some(TaskStatus::Success { stdout: output }))
+                }
+            }
+            Err(_e) => {
+                drop(temp_script);
+                Ok(Some(TaskStatus::Failed {
+                    exit_code: None,
+                    stderr: format!("DEL execution denied for skill_execute: {}", _e),
+                }))
+            }
+        }
     }
 
     pub async fn execute_capability_task(
@@ -2031,7 +2074,7 @@ impl WorkerAgent {
         };
 
         if is_external {
-            // ── External absolute path: use MetaBrain permission + direct read ──
+            // ── External absolute path: use MetaBrain permission + DEL ──
             let abs = PathBuf::from(target);
             let safe_path = match self
                 .ensure_path_permission(&abs.to_string_lossy(), PermissionFlags::FILE_READ)
@@ -2046,7 +2089,6 @@ impl WorkerAgent {
                 }
             };
 
-            // Security: never read if the canonical path has a symlink escape
             let canonical = match std::fs::canonicalize(&safe_path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -2057,15 +2099,22 @@ impl WorkerAgent {
                 }
             };
 
-            match std::fs::read_to_string(&canonical) {
-                Ok(data) => Ok(TaskStatus::Success { stdout: data }),
+            let path_str = canonical.to_string_lossy().to_string();
+            match self.execute_del("read_file", Capability::FileRead, json!({"path": path_str})) {
+                Ok(output) => {
+                    if output.starts_with("Execution denied:") {
+                        Ok(TaskStatus::Failed { exit_code: None, stderr: output })
+                    } else {
+                        Ok(TaskStatus::Success { stdout: output })
+                    }
+                }
                 Err(e) => Ok(TaskStatus::Failed {
                     exit_code: None,
-                    stderr: format!("{} ({})", e, canonical.display()),
+                    stderr: e,
                 }),
             }
         } else {
-            // ── Workspace-scoped path: use existing sandbox capability ──
+            // ── Workspace-scoped path: use DEL ──
             let (relative_path, absolute_path) = match resolve_workspace_target(target) {
                 Ok(paths) => paths,
                 Err(reason) => {
@@ -2092,21 +2141,18 @@ impl WorkerAgent {
                 }
             };
 
-            let capability = match WorkspaceCapability::open(&config::workspace_root()) {
-                Ok(cap) => cap,
-                Err(err) => {
-                    return Ok(TaskStatus::Failed {
-                        exit_code: None,
-                        stderr: format!("Workspace capability open failed: {err}"),
-                    });
+            let path_str = safe_path.to_string_lossy().to_string();
+            match self.execute_del("read_file", Capability::FileRead, json!({"path": path_str})) {
+                Ok(output) => {
+                    if output.starts_with("Execution denied:") {
+                        Ok(TaskStatus::Failed { exit_code: None, stderr: output })
+                    } else {
+                        Ok(TaskStatus::Success { stdout: output })
+                    }
                 }
-            };
-
-            match capability.read_to_string(relative_path.as_path()) {
-                Ok(data) => Ok(TaskStatus::Success { stdout: data }),
                 Err(e) => Ok(TaskStatus::Failed {
                     exit_code: None,
-                    stderr: format!("{} ({})", e, safe_path.display()),
+                    stderr: format!("DEL execution denied for fs_read: {}", e),
                 }),
             }
         }
@@ -2139,19 +2185,13 @@ impl WorkerAgent {
             }
         };
         let data = value_to_string(intent.payload.as_ref());
-        let capability = match WorkspaceCapability::open(&config::workspace_root()) {
-            Ok(cap) => cap,
-            Err(err) => {
-                let _ = cleanup_workspace_tmp_files();
-                return Ok(TaskStatus::Failed {
-                    exit_code: None,
-                    stderr: format!("Workspace capability open failed: {err}"),
-                });
-            }
-        };
+        let path_str = safe_path.to_string_lossy().to_string();
 
-        match capability.atomic_write(relative_path.as_path(), data.as_bytes()) {
-            Ok(_) => {
+        match self.execute_del("write_file", Capability::FileWrite, json!({"path": path_str, "content": data})) {
+            Ok(output) => {
+                if output.starts_with("Execution denied:") {
+                    return Ok(TaskStatus::Failed { exit_code: None, stderr: output });
+                }
                 let db = self.db.lock().await;
                 if let Err(err) = memory::mark_sandbox_written(&db, &safe_path, true) {
                     eprintln!(
@@ -2159,17 +2199,12 @@ impl WorkerAgent {
                         safe_path.display()
                     );
                 }
-                Ok(TaskStatus::Success {
-                    stdout: format!("wrote {} bytes to {}", data.len(), safe_path.display()),
-                })
+                Ok(TaskStatus::Success { stdout: output })
             }
-            Err(e) => {
-                let _ = cleanup_workspace_tmp_files();
-                Ok(TaskStatus::Failed {
-                    exit_code: None,
-                    stderr: e.to_string(),
-                })
-            }
+            Err(e) => Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: format!("DEL execution denied for write_file: {}", e),
+            }),
         }
     }
 
@@ -2180,19 +2215,23 @@ impl WorkerAgent {
                 stderr: reason,
             });
         }
-        let mut cmd = Command::new("open");
-        cmd.arg("-a").arg(&intent.target);
-        let status = run_command(&mut cmd, self.config.command_timeout)?;
 
-        // Update UI state silently after launching an app
-        if let TaskStatus::Success { .. } = &status {
-            if let Some(bridge) = &self.ui_bridge {
-                // Non-blocking sleep to allow app animation
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                let _ = bridge.refresh_ui_tree();
+        match self.execute_del("app_open", Capability::AppOpen, json!({"app_name": intent.target})) {
+            Ok(output) => {
+                if output.starts_with("Execution denied:") {
+                    return Ok(TaskStatus::Failed { exit_code: None, stderr: output });
+                }
+                if let Some(bridge) = &self.ui_bridge {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    let _ = bridge.refresh_ui_tree();
+                }
+                Ok(TaskStatus::Success { stdout: output })
             }
+            Err(e) => Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: format!("DEL execution denied for app_open: {}", e),
+            }),
         }
-        Ok(status)
     }
 
     async fn action_process_spawn(
@@ -2222,13 +2261,27 @@ impl WorkerAgent {
             }
         };
 
-        let subgraph = self.relevant_subgraph(root_node_id, intent).await?;
-        sandbox_status(
-            &intent.target,
-            &args,
-            &subgraph,
-            self.config.command_timeout,
-        )
+        let full_command = std::iter::once(intent.target.clone())
+            .chain(args.clone().into_iter())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        match self.execute_del("process_spawn", Capability::OsProcessSpawn, json!({
+            "command": full_command,
+            "working_dir": config::workspace_root().to_string_lossy().to_string()
+        })) {
+            Ok(output) => {
+                if output.starts_with("Execution denied:") {
+                    Ok(TaskStatus::Failed { exit_code: None, stderr: output })
+                } else {
+                    Ok(TaskStatus::Success { stdout: output })
+                }
+            }
+            Err(_e) => Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: format!("DEL execution denied for process_spawn: {}", _e),
+            }),
+        }
     }
 
     async fn action_os_open_url(&self, intent: &ActionIntent) -> MoatResult<TaskStatus> {
@@ -2256,9 +2309,20 @@ impl WorkerAgent {
                 stderr: reason,
             });
         }
-        let mut cmd = Command::new("open");
-        cmd.arg(&intent.target);
-        run_command(&mut cmd, self.config.command_timeout)
+
+        match self.execute_del("url_open", Capability::UrlOpen, json!({"url": intent.target})) {
+            Ok(output) => {
+                if output.starts_with("Execution denied:") {
+                    Ok(TaskStatus::Failed { exit_code: None, stderr: output })
+                } else {
+                    Ok(TaskStatus::Success { stdout: output })
+                }
+            }
+            Err(_e) => Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: format!("DEL execution denied for url_open: {}", _e),
+            }),
+        }
     }
 
     async fn action_os_applescript(
@@ -2321,44 +2385,28 @@ impl WorkerAgent {
             MetaBrain::flush_arc(Arc::clone(&self.meta_brain)).await?;
         }
 
-        let tmp_path = std::env::temp_dir().join(format!("moat_as_{}.applescript", Uuid::new_v4()));
-        if let Err(e) = std::fs::write(&tmp_path, script.as_bytes()) {
-            return Ok(TaskStatus::Failed {
-                exit_code: None,
-                stderr: format!("Temp write failed: {}", e),
-            });
-        }
-        #[cfg(unix)]
-        {
-            if let Err(err) = std::fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o400))
-            {
-                let _ = std::fs::remove_file(&tmp_path);
-                return Ok(TaskStatus::Failed {
-                    exit_code: None,
-                    stderr: format!("Temp permission lock failed: {}", err),
-                });
-            }
-        }
-
-        let mut cmd = Command::new("osascript");
-        cmd.arg(&tmp_path);
-        let status = run_command(&mut cmd, self.config.command_timeout)?;
-        let _ = std::fs::remove_file(&tmp_path);
-
-        // Active Vision Loop: refresh UI tree after AppleScript execution
-        if let TaskStatus::Success { stdout } = &status {
-            if let Some(bridge) = &self.ui_bridge {
-                if let Ok(tree_text) = bridge.refresh_ui_tree() {
-                    return Ok(TaskStatus::Success {
-                        stdout: format!(
-                            "{}\n\n<active_ui_tree>\n{}\n</active_ui_tree>",
-                            stdout, tree_text
-                        ),
-                    });
+        match self.execute_del("applescript", Capability::OsProcessSpawn, json!({"script": script})) {
+            Ok(output) => {
+                if output.starts_with("Execution denied:") {
+                    return Ok(TaskStatus::Failed { exit_code: None, stderr: output });
                 }
+                if let Some(bridge) = &self.ui_bridge {
+                    if let Ok(tree_text) = bridge.refresh_ui_tree() {
+                        return Ok(TaskStatus::Success {
+                            stdout: format!(
+                                "{}\n\n<active_ui_tree>\n{}\n</active_ui_tree>",
+                                output, tree_text
+                            ),
+                        });
+                    }
+                }
+                Ok(TaskStatus::Success { stdout: output })
             }
+            Err(_e) => Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: format!("DEL execution denied for applescript: {}", _e),
+            }),
         }
-        Ok(status)
     }
 
     async fn action_os_inject_text(
@@ -2444,16 +2492,20 @@ impl WorkerAgent {
             }
         }
 
-        match inject_text_via_clipboard(&text_to_inject) {
-            Ok(()) => Ok(TaskStatus::Success {
-                stdout: format!(
-                    "Injected {} bytes into the active application.",
-                    text_to_inject.len()
-                ),
-            }),
-            Err(err) => Ok(TaskStatus::Failed {
+        match self.execute_del("inject_text", Capability::OsProcessSpawn, json!({
+            "text": text_to_inject,
+            "expected_app_name": expected_app_name
+        })) {
+            Ok(output) => {
+                if output.starts_with("Execution denied:") {
+                    Ok(TaskStatus::Failed { exit_code: None, stderr: output })
+                } else {
+                    Ok(TaskStatus::Success { stdout: output })
+                }
+            }
+            Err(_e) => Ok(TaskStatus::Failed {
                 exit_code: None,
-                stderr: err,
+                stderr: format!("DEL execution denied for inject_text: {}", _e),
             }),
         }
     }
@@ -2521,36 +2573,33 @@ impl WorkerAgent {
 
         let timeout_secs = self.config.command_timeout.as_secs().to_string();
         let max_bytes = self.curl_max_response_bytes().to_string();
-        let mut args = vec![
-            "--silent".to_string(),
-            "--fail-with-body".to_string(),
-            "--max-time".to_string(),
-            timeout_secs,
-            "--max-filesize".to_string(),
-            max_bytes,
-            "--max-redirs".to_string(),
-            "5".to_string(),
-            "-X".to_string(),
-            method_upper,
-        ];
 
-        for (k, v) in &headers {
-            let safe_header = format!(
-                "{}: {}",
-                k.replace(['\r', '\n'], ""),
-                v.replace(['\r', '\n'], "")
-            );
-            args.push("-H".to_string());
-            args.push(safe_header);
-        }
-        if !body.is_empty() {
-            args.push("--data-raw".to_string());
-            args.push(body);
-        }
-        args.push(intent.target.clone());
+        // Build headers string for DEL
+        let headers_str = headers.iter()
+            .map(|(k, v)| format!("{}: {}", k.replace(['\r', '\n'], ""), v.replace(['\r', '\n'], "")))
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        let subgraph = self.relevant_subgraph(root_node_id, intent).await?;
-        sandbox_status("curl", &args, &subgraph, self.config.command_timeout)
+        match self.execute_del("net_curl", Capability::UrlOpen, json!({
+            "url": intent.target,
+            "method": method_upper,
+            "body": body,
+            "headers": headers_str,
+            "timeout_secs": timeout_secs,
+            "max_bytes": max_bytes
+        })) {
+            Ok(output) => {
+                if output.starts_with("Execution denied:") {
+                    Ok(TaskStatus::Failed { exit_code: None, stderr: output })
+                } else {
+                    Ok(TaskStatus::Success { stdout: output })
+                }
+            }
+            Err(_e) => Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: format!("DEL execution denied for net_curl: {}", _e),
+            }),
+        }
     }
 }
 
@@ -2972,6 +3021,7 @@ impl Orchestrator {
             db: Arc::clone(&old.db),
             consent_bridge: old.consent_bridge.clone(),
             ui_bridge: Some(Arc::clone(&bridge)),
+            del: old.del.clone(),
         };
         self.worker = Arc::new(new_worker);
         self.ui_bridge = Some(bridge);
@@ -4998,8 +5048,8 @@ mod tests {
             external_apis: ExternalApiConfig::default(),
         };
         match consent_bridge {
-            Some(bridge) => WorkerAgent::with_consent_bridge(config, meta_brain, db, bridge),
-            None => WorkerAgent::new(config, meta_brain, db),
+            Some(bridge) => WorkerAgent::with_consent_bridge(config, meta_brain, db, bridge).expect("test worker with consent"),
+            None => WorkerAgent::new(config, meta_brain, db).expect("test worker"),
         }
     }
 

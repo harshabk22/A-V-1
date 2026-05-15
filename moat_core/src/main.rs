@@ -1,15 +1,40 @@
-use moat_core::System;
+use moat_core::{System, AgentKind, server};
 use std::io::{self, Write};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let is_spotlight_server = args.iter().any(|a| a == "--spotlight-server");
+    let is_spotlight = args.iter().any(|a| a == "--spotlight");
+
+    if is_spotlight_server {
+        return run_spotlight_server().await;
+    }
+
+    let kind = if is_spotlight {
+        AgentKind::Spotlight
+    } else {
+        AgentKind::MainUi
+    };
+
     println!("╔══════════════════════════════════════════╗");
     println!("║    Moat Core Interactive Shell           ║");
     println!("╚══════════════════════════════════════════╝");
+    match kind {
+        AgentKind::Spotlight => println!("Mode: Spotlight (Agent1-only, isolated)"),
+        AgentKind::MainUi => println!("Mode: Main UI (Agent2 executor)"),
+    }
     println!("Commands:  /quit  /new  /sessions  /help");
+
+    if kind == AgentKind::Spotlight {
+        println!("In Spotlight mode, ALL queries go directly to Agent1. No routing.");
+    }
     println!();
 
-    let mut system = System::new()?;
+    let mut system = match kind {
+        AgentKind::Spotlight => System::new_spotlight()?,
+        AgentKind::MainUi => System::new_main_ui()?,
+    };
 
     println!("── System ready ──────────────────────────────");
     println!("Waiting for your input...\n");
@@ -45,7 +70,10 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
             "/new" => {
-                system = System::new_session()?;
+                system = match kind {
+                    AgentKind::Spotlight => System::new_spotlight()?,
+                    AgentKind::MainUi => System::new_main_ui()?,
+                };
                 println!("── New session started ─────────────────────");
                 continue;
             }
@@ -70,12 +98,24 @@ async fn main() -> anyhow::Result<()> {
 
         for query in queries {
             println!("\n── Query ────────────────────────────────────");
-            match system.process_user_query(query).await {
+            let result = match kind {
+                AgentKind::Spotlight => system.process_spotlight_query(query).await,
+                AgentKind::MainUi => system.process_user_query(query).await,
+            };
+            match result {
                 Ok(response) => println!("{}", response),
                 Err(e) => println!("System error: {}", e),
             }
         }
     }
 
+    Ok(())
+}
+
+async fn run_spotlight_server() -> anyhow::Result<()> {
+    println!("[Spotlight Server] Starting on http://127.0.0.1:8765");
+    let app = server::spotlight::router();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:8765").await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }

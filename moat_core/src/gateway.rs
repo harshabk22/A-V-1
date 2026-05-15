@@ -19,7 +19,6 @@ const GATEWAY_PAIRING_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 pub enum SessionSource {
     DesktopUi,
     CommandBar,
-    Voice,
     Automation,
     #[serde(rename = "webchat", alias = "web_chat")]
     WebChat,
@@ -39,7 +38,6 @@ impl SessionSource {
         match self {
             Self::DesktopUi => "desktop_ui",
             Self::CommandBar => "command_bar",
-            Self::Voice => "voice",
             Self::Automation => "automation",
             Self::WebChat => "webchat",
             Self::Cli => "cli",
@@ -1461,8 +1459,7 @@ impl GatewayServer {
         match source {
             SessionSource::DesktopUi => "desktop_ui:main",
             SessionSource::CommandBar => "command_bar:overlay",
-            SessionSource::Voice => "voice:primary",
-            SessionSource::Automation => "automation:sentinel",
+            SessionSource::Automation => "automation:trigger",
             SessionSource::WebChat => "webchat:main",
             SessionSource::Cli => "cli:main",
             SessionSource::WhatsApp => "whatsapp:main",
@@ -1492,17 +1489,10 @@ impl GatewayServer {
                 "tauri",
             ),
             Self::adapter(
-                "voice",
-                SessionSource::Voice,
-                "voice:primary",
-                "Voice",
-                "local_voice",
-            ),
-            Self::adapter(
                 "automation",
                 SessionSource::Automation,
-                "automation:sentinel",
-                "Sentinel",
+                "automation:trigger",
+                "Automation",
                 "internal",
             ),
             Self::adapter(
@@ -1730,7 +1720,6 @@ fn parse_session_source(raw: &str) -> Option<SessionSource> {
     match raw.trim() {
         "desktop_ui" => Some(SessionSource::DesktopUi),
         "command_bar" => Some(SessionSource::CommandBar),
-        "voice" => Some(SessionSource::Voice),
         "automation" => Some(SessionSource::Automation),
         "webchat" => Some(SessionSource::WebChat),
         "cli" => Some(SessionSource::Cli),
@@ -1795,7 +1784,6 @@ fn is_local_trusted_client(role: GatewayClientRole, source: SessionSource) -> bo
         source,
         SessionSource::DesktopUi
             | SessionSource::CommandBar
-            | SessionSource::Voice
             | SessionSource::Automation
     )
 }

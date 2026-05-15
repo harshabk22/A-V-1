@@ -92,6 +92,7 @@ use tools::ToolExecutor;
 use session::SessionStore;
 use profile::ProfileStore;
 use trust_store::TrustStore;
+use execution::journal_chain::verify_chain;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -202,6 +203,20 @@ impl System {
 
         if resume {
             Self::replay_approvals(&session_store, &meta_brain, "agent1")?;
+            // Verify chain journal integrity on resume
+            let chain_path = dirs::home_dir()
+                .expect("Cannot determine home directory")
+                .join(".ageex").join("chain.journal");
+            match verify_chain(&chain_path) {
+                Ok(count) => {
+                    if count > 0 {
+                        println!("[System] Chain journal verified: {} entries, integrity OK", count);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[System] Chain journal verification FAILED: {}", e);
+                }
+            }
         }
 
         let (router, agent2, tool_executor_agent2) = match kind {
