@@ -207,13 +207,18 @@ impl Agent {
                 "tool" => crate::context::Role::Tool,
                 _ => continue,
             };
-            context.append(crate::context::Message {
-                role,
-                content: msg.content.clone(),
-                timestamp: msg.timestamp as u64,
-                tool_call_id: None,
-                tool_calls: None,
-            })?;
+            let message = match role {
+                crate::context::Role::User => crate::context::Message::user(&msg.content),
+                crate::context::Role::Tool => crate::context::Message::tool(&msg.content),
+                _ => crate::context::Message {
+                    role,
+                    content: msg.content.clone(),
+                    timestamp: msg.timestamp as u64,
+                    tool_call_id: None,
+                    tool_calls: None,
+                },
+            };
+            context.append(message)?;
         }
 
         if msg_count > 0 {

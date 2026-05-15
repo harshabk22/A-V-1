@@ -5,8 +5,9 @@ use anyhow::{Result, Context};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::fs;
+use std::fs::OpenOptions;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 pub struct Gate3Sandbox;
 
@@ -37,7 +38,16 @@ impl Gate3Sandbox {
         let normalized = normalize_workspace_path(raw);
         let path = Self::resolve_path(&normalized, &req.working_dir);
 
-        let content = fs::read_to_string(&path)
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|e| ExecutionResult::gate3_denied(
+                &req.request_id,
+                &format!("Read open failed (O_NOFOLLOW): {}. Symlink traversal denied.", e),
+            ))?;
+
+        let content = std::io::read_to_string(file)
             .map_err(|e| ExecutionResult::gate3_denied(&req.request_id, &format!("Read failed: {}", e)))?;
 
         let elapsed = start.elapsed().as_millis() as u64;
@@ -56,7 +66,19 @@ impl Gate3Sandbox {
                 .map_err(|e| ExecutionResult::gate3_denied(&req.request_id, &format!("mkdir failed: {}", e)))?;
         }
 
-        fs::write(&path, content)
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|e| ExecutionResult::gate3_denied(
+                &req.request_id,
+                &format!("Write open failed (O_NOFOLLOW): {}. Symlink traversal denied.", e),
+            ))?;
+
+        use std::io::Write;
+        file.write_all(content.as_bytes())
             .map_err(|e| ExecutionResult::gate3_denied(&req.request_id, &format!("Write failed: {}", e)))?;
 
         let elapsed = start.elapsed().as_millis() as u64;

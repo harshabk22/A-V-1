@@ -60,7 +60,6 @@ impl CapabilitySet {
         Self::new(vec![
             Capability::FileRead,
             Capability::FileExists,
-            Capability::OsProcessSpawn,
             Capability::AppOpen,
             Capability::UrlOpen,
         ])
