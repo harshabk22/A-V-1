@@ -19,11 +19,23 @@ pub struct Message {
     pub tool_call_id: Option<String>,
 }
 
+const SYSTEM_START: &str = "<|SYSTEM_START|>";
+const SYSTEM_END: &str = "<|SYSTEM_END|>";
+
+fn strip_instruction_delimiters(mut s: String) -> String {
+    for pattern in &[SYSTEM_START, SYSTEM_END, "</system>", "<system>"] {
+        s = s.replace(pattern, "[FILTERED]");
+    }
+    s
+}
+
 impl Message {
     pub fn system(content: impl Into<String>) -> Self {
+        let inner = content.into();
+        let wrapped = format!("{}\n{}\n{}", SYSTEM_START, inner, SYSTEM_END);
         Self {
             role: Role::System,
-            content: content.into(),
+            content: wrapped,
             timestamp: Self::now(),
             tool_call_id: None,
         }
@@ -32,7 +44,7 @@ impl Message {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: Role::User,
-            content: content.into(),
+            content: strip_instruction_delimiters(content.into()),
             timestamp: Self::now(),
             tool_call_id: None,
         }
@@ -50,7 +62,7 @@ impl Message {
     pub fn tool(content: impl Into<String>) -> Self {
         Self {
             role: Role::Tool,
-            content: content.into(),
+            content: strip_instruction_delimiters(content.into()),
             timestamp: Self::now(),
             tool_call_id: None,
         }
@@ -59,7 +71,7 @@ impl Message {
     pub fn tool_with_id(content: impl Into<String>, tool_call_id: String) -> Self {
         Self {
             role: Role::Tool,
-            content: content.into(),
+            content: strip_instruction_delimiters(content.into()),
             timestamp: Self::now(),
             tool_call_id: Some(tool_call_id),
         }

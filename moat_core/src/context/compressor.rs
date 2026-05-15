@@ -118,7 +118,7 @@ mod tests {
         let compressed = ContextCompressor::compress_tiered(messages.clone()).unwrap();
 
         assert_eq!(compressed[0].role, Role::System);
-        assert_eq!(compressed[0].content, "System prompt");
+        assert_eq!(compressed[0].content, "<|SYSTEM_START|>\nSystem prompt\n<|SYSTEM_END|>");
 
         assert!(compressed.iter().any(|m| m.content.contains("CONTEXT SUMMARY")));
 
