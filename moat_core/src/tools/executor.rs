@@ -7,7 +7,8 @@ use crate::execution::{DelExecutor, ExecutionError, ExecutionRequest};
 use crate::execution::gate2_policy::normalize_workspace_path;
 use crate::execution::journal::ExecutionJournal;
 use anyhow::Result;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -504,9 +505,19 @@ impl ToolExecutor {
             workspace.join(raw_path).to_string_lossy().into_owned()
         };
 
-        // Open the file first — no check on the string
-        let file = File::open(&open_path)
-            .map_err(|e| anyhow::anyhow!("[fs] open failed for {}: {}", open_path, e))?;
+        // Open the file first with O_NOFOLLOW — kernel-level symlink prevention.
+        // This closes the TOCTOU window: if the path is a symlink at open time,
+        // the kernel returns ELOOP before we ever get a file descriptor.
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&open_path)
+            .map_err(|e| match e.raw_os_error() {
+                Some(libc::ELOOP) => {
+                    anyhow::anyhow!(ExecutionError::SymlinkDenied(PathBuf::from(&open_path)))
+                }
+                _ => anyhow::anyhow!("[fs] open failed for {}: {}", open_path, e),
+            })?;
 
         // Resolve the actual path from the open fd, not from the original string
         let resolved = Self::resolve_from_fd(file.as_raw_fd())?;
