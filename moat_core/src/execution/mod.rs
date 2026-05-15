@@ -5,10 +5,12 @@ pub mod gate2_policy;
 pub mod gate3_sandbox;
 pub mod journal;
 pub mod error;
+pub mod spawn;
 
 pub use request::ExecutionRequest;
 pub use result::ExecutionResult;
 pub use error::ExecutionError;
+pub use spawn::{AgentPool, SpawnContext, SpawnError, MAX_SPAWN_DEPTH};
 
 use gate1_schema::Gate1Schema;
 use gate2_policy::Gate2Policy;

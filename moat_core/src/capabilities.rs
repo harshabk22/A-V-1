@@ -46,6 +46,10 @@ impl CapabilitySet {
         self.capabilities.contains(cap)
     }
 
+    pub fn contains_all(&self, other: &CapabilitySet) -> bool {
+        other.capabilities.iter().all(|c| self.capabilities.contains(c))
+    }
+
     pub fn agent1_default() -> Self {
         Self::new(vec![
             Capability::FileRead,
