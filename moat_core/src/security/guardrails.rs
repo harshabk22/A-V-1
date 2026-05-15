@@ -72,7 +72,9 @@ impl GuardrailsEngine {
             }
         }
 
-        let blocked = false; // output is redacted, never blocked
+        let blocked = all_findings
+            .iter()
+            .any(|f| f.severity == super::scanners::ThreatLevel::Critical);
 
         GuardResult {
             sanitized,

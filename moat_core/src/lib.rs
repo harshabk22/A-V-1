@@ -173,6 +173,10 @@ impl System {
         // Arc<AsyncRwLock<MetaBrain>> (tokio async RwLock) for its async workflow.
         // These are intentionally SEPARATE MetaBrain instances — they do not share
         // permission state between the agent path and the swarm path.
+        // Permission grants in one path do NOT propagate to the other.
+        // Users may be re-prompted for the same permission across paths.
+        // Both instances persist to ~/.ageex/metabrain.bin independently.
+        // Permission replay on session resume applies to BOTH instances.
         let meta_brain = Arc::new(Mutex::new(MetaBrain::new()));
 
         {

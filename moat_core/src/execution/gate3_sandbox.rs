@@ -144,7 +144,12 @@ impl Gate3Sandbox {
 
     fn execute_applescript(req: &ExecutionRequest, start: std::time::Instant) -> Result<ExecutionResult, ExecutionResult> {
         let script = req.args["script"].as_str().unwrap_or("");
-        let tmp_path = std::env::temp_dir().join(format!("ageex_as_{}.applescript", uuid::Uuid::new_v4()));
+        let home = dirs::home_dir()
+            .ok_or_else(|| ExecutionResult::gate3_denied(&req.request_id, "Cannot determine home directory"))?;
+        let ageex_tmp = home.join(".ageex").join("tmp");
+        fs::create_dir_all(&ageex_tmp)
+            .map_err(|e| ExecutionResult::gate3_denied(&req.request_id, &format!("ageex tmp dir creation failed: {}", e)))?;
+        let tmp_path = ageex_tmp.join(format!("ageex_as_{}.applescript", uuid::Uuid::new_v4()));
         fs::write(&tmp_path, script.as_bytes())
             .map_err(|e| ExecutionResult::gate3_denied(&req.request_id, &format!("applescript temp write failed: {}", e)))?;
 
@@ -300,7 +305,10 @@ impl Gate3Sandbox {
             rustup = rustup_path.display(),
         );
 
-        let temp = std::env::temp_dir().join(format!("ageex-{}.sb", uuid::Uuid::new_v4()));
+        let home = dirs::home_dir().context("Cannot determine home directory")?;
+        let ageex_tmp = home.join(".ageex").join("tmp");
+        fs::create_dir_all(&ageex_tmp)?;
+        let temp = ageex_tmp.join(format!("ageex-{}.sb", uuid::Uuid::new_v4()));
         fs::write(&temp, profile)?;
         Ok(temp)
     }

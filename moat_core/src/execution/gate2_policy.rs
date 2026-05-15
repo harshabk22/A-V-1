@@ -64,7 +64,15 @@ impl Gate2Policy {
 
         if let Some(command) = req.args.get("command").and_then(|v| v.as_str()) {
             for blocked in &self.policy.blocked_commands {
-                if command.contains(blocked) {
+                let matched = if blocked.contains(' ') {
+                    // Multi-word pattern: prefix match (e.g., "rm -rf /")
+                    command.starts_with(blocked.as_str())
+                } else {
+                    // Single-word pattern: exact first-token match (e.g., "sudo", "mkfs")
+                    let first_token = command.split_whitespace().next().unwrap_or("");
+                    first_token == blocked.as_str()
+                };
+                if matched {
                     return Err(ExecutionResult::gate2_denied(
                         &req.request_id,
                         &format!("Blocked command pattern: {}", blocked)

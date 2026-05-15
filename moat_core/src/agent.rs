@@ -280,7 +280,7 @@ impl Agent {
     ) -> Result<String> {
         match tool_executor.execute(tool_name, args_json).await {
             Ok(output) => {
-                if output.contains("DENIED") || output.contains("No permission") {
+                if output.starts_with("__MOAT_DENIED__") {
                     self.loop_state.last_tool_failed = true;
                     let same_as_last = self.loop_state.last_failed_tool == tool_name
                         && self.loop_state.last_failed_args == args_json;

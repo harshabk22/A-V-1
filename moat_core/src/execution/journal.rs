@@ -81,7 +81,7 @@ impl ExecutionJournal {
         path: &str,
         success: bool,
         message: &str,
-    ) {
+    ) -> Result<()> {
         let severity = match tool_name {
             "delete_file" | "fs_delete" => "destructive",
             _ => "normal",
@@ -103,13 +103,10 @@ impl ExecutionJournal {
             .open(&self.path)
         {
             Ok(mut file) => {
-                if let Err(e) = writeln!(file, "{}", entry) {
-                    eprintln!("[Journal] Write failed: {}", e);
-                }
+                writeln!(file, "{}", entry)?;
+                Ok(())
             }
-            Err(e) => {
-                eprintln!("[Journal] Open failed: {}", e);
-            }
+            Err(e) => Err(anyhow::anyhow!("[Journal] Open failed: {}", e)),
         }
     }
 }

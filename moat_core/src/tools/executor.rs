@@ -90,7 +90,7 @@ impl ToolExecutor {
                 // TOCTOU-safe: open first, validate from the fd-derived path
                 let resolved = Self::resolve_and_validate(raw_path)?;
                 if !self.check_path_permission(PermissionFlags::FILE_READ, &resolved).await? {
-                    return Ok(format!("[fs:read] DENIED: No permission to read {}", raw_path));
+                    return Ok(format!("__MOAT_DENIED__ [fs:read] No permission to read {}", raw_path));
                 }
                 self.execute_del("read_file", args)
             }
@@ -99,7 +99,7 @@ impl ToolExecutor {
                     .ok_or_else(|| anyhow::anyhow!("fs_exists requires 'path' argument"))?;
                 let resolved = Self::resolve_path(path)?;
                 if !self.check_path_permission(PermissionFlags::FILE_READ, &resolved).await? {
-                    return Ok(format!("[fs:exists] DENIED: No permission to read {}", path));
+                    return Ok(format!("__MOAT_DENIED__ [fs:exists] No permission to read {}", path));
                 }
                 self.execute_del("fs_exists", args)
             }
@@ -108,21 +108,21 @@ impl ToolExecutor {
                     .ok_or_else(|| anyhow::anyhow!("fs_write requires 'path' argument"))?;
                 let resolved = Self::resolve_path(raw_path)?;
                 if Self::is_path_protected(Path::new(&resolved)) {
-                    return Ok(format!("[fs:write] DENIED: {} is a protected file", raw_path));
+                    return Ok(format!("__MOAT_DENIED__ [fs:write] {} is a protected file", raw_path));
                 }
                 if !self.check_path_permission(PermissionFlags::FILE_WRITE, &resolved).await? {
-                    return Ok(format!("[fs:write] DENIED: No permission to write {}", raw_path));
+                    return Ok(format!("__MOAT_DENIED__ [fs:write] No permission to write {}", raw_path));
                 }
 
                 let content = args["content"].as_str().unwrap_or("");
                 if content.is_empty() && Path::new(&resolved).exists() {
                     return Err(anyhow::anyhow!(
-                        "[fs:write] DENIED: Empty write to existing file detected. Use fs_delete to delete files."
+                        "__MOAT_DENIED__ [fs:write] Empty write to existing file detected. Use fs_delete to delete files."
                     ));
                 }
 
                 let result = self.execute_del("write_file", args)?;
-                self.journal.log_entry(&self.agent_id, "write_file", &resolved, true, &result);
+                let _ = self.journal.log_entry(&self.agent_id, "write_file", &resolved, true, &result);
                 Ok(result)
             }
             "fs_delete" => {
@@ -139,9 +139,13 @@ impl ToolExecutor {
                 };
                 if !consent_approved {
                     return Ok(format!(
-                        "[fs:delete] DENIED: consent not granted for {}",
+                        "__MOAT_DENIED__ [fs:delete] consent not granted for {}",
                         raw_path
                     ));
+                }
+                // Pre-check: handle non-existent files cleanly before TOCTOU validation
+                if !Path::new(raw_path).exists() {
+                    return Ok(format!("[fs:delete] file not found: {}", raw_path));
                 }
                 // TOCTOU-safe: open first, validate from the fd-derived path
                 let resolved = Self::resolve_and_validate(raw_path)?;
@@ -158,11 +162,11 @@ impl ToolExecutor {
                     );
                 }
                 if !self.check_path_permission(PermissionFlags::FILE_DELETE, &resolved).await? {
-                    return Ok(format!("[fs:delete] DENIED: No permission to delete {}", raw_path));
+                    return Ok(format!("__MOAT_DENIED__ [fs:delete] No permission to delete {}", raw_path));
                 }
 
                 let result = self.execute_del("fs_delete", args)?;
-                self.journal.log_entry(&self.agent_id, "delete_file", &resolved, true, &result);
+                let _ = self.journal.log_entry(&self.agent_id, "delete_file", &resolved, true, &result);
                 Ok(result)
             }
             "process_spawn" => {
@@ -172,7 +176,7 @@ impl ToolExecutor {
                     .unwrap_or("~/Desktop/ageex-workspace");
                 let resolved_wd = Self::resolve_path(working_dir_raw)?;
                 if !self.check_path_permission(PermissionFlags::EXEC, &resolved_wd).await? {
-                    return Ok(format!("[process:spawn] DENIED: No permission to run `{}`", command));
+                    return Ok(format!("__MOAT_DENIED__ [process:spawn] No permission to run `{}`", command));
                 }
                 self.execute_del("process_spawn", args)
             }
@@ -189,7 +193,7 @@ impl ToolExecutor {
                 };
                 if !consent_approved {
                     return Ok(format!(
-                        "[app:open] DENIED: consent not granted for {}",
+                        "__MOAT_DENIED__ [app:open] consent not granted for {}",
                         app_name
                     ));
                 }
@@ -205,7 +209,7 @@ impl ToolExecutor {
                     );
                 }
                 if !self.check_app_permission(app_name).await? {
-                    return Ok(format!("[app:open] DENIED: No permission to open {}", app_name));
+                    return Ok(format!("__MOAT_DENIED__ [app:open] No permission to open {}", app_name));
                 }
                 self.execute_del("app_open", args)
             }
@@ -222,7 +226,7 @@ impl ToolExecutor {
                 };
                 if !consent_approved {
                     return Ok(format!(
-                        "[url:open] DENIED: consent not granted for {}",
+                        "__MOAT_DENIED__ [url:open] consent not granted for {}",
                         url
                     ));
                 }
@@ -247,7 +251,7 @@ impl ToolExecutor {
                     );
                 }
                 if !self.check_url_permission(url).await? {
-                    return Ok(format!("[url:open] DENIED: No permission to open {}", url));
+                    return Ok(format!("__MOAT_DENIED__ [url:open] No permission to open {}", url));
                 }
                 self.execute_del("url_open", args)
             }
@@ -267,7 +271,7 @@ impl ToolExecutor {
 
     /// Execute an operation through DEL without MetaBrain permission checks.
     /// Used by the orchestrator (which does its own MetaBrain checks).
-    pub fn execute_via_del(&self, del_tool_name: &str, args: serde_json::Value) -> Result<String> {
+    pub(crate) fn execute_via_del(&self, del_tool_name: &str, args: serde_json::Value) -> Result<String> {
         self.execute_del(del_tool_name, args)
     }
 
