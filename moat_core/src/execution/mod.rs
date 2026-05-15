@@ -7,6 +7,7 @@ pub mod journal;
 pub mod error;
 pub mod spawn;
 pub mod loop_guard;
+pub mod journal_chain;
 
 pub use request::ExecutionRequest;
 pub use result::ExecutionResult;
