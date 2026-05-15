@@ -4,9 +4,11 @@ pub mod gate1_schema;
 pub mod gate2_policy;
 pub mod gate3_sandbox;
 pub mod journal;
+pub mod error;
 
 pub use request::ExecutionRequest;
 pub use result::ExecutionResult;
+pub use error::ExecutionError;
 
 use gate1_schema::Gate1Schema;
 use gate2_policy::Gate2Policy;

@@ -2,7 +2,7 @@ use crate::capabilities::Capability;
 use crate::meta_brain::{MetaBrain, PermissionFlags};
 use crate::approval::{ApprovalFlow, ApprovalRequest, ApprovalDecision};
 use crate::session::SessionStore;
-use crate::execution::{DelExecutor, ExecutionRequest};
+use crate::execution::{DelExecutor, ExecutionError, ExecutionRequest};
 use crate::execution::gate2_policy::normalize_workspace_path;
 use crate::execution::journal::ExecutionJournal;
 use anyhow::Result;
@@ -163,6 +163,16 @@ impl ToolExecutor {
                     return Ok(format!("[url:open] DENIED: No permission to open {}", url));
                 }
                 Self::execute_url_open(url)
+            }
+            "skill_execute" => {
+                if self.agent_id == "agent1" {
+                    return Err(ExecutionError::CapabilityDenied {
+                        agent: "Agent1".into(),
+                        capability: "skill_execute".into(),
+                        reason: "Agent1 is read-only; skill execution is not permitted".into(),
+                    }.into());
+                }
+                self.execute_del("skill_execute", args)
             }
             unknown => anyhow::bail!("Unknown tool: {}", unknown),
         }
@@ -478,4 +488,31 @@ mod tests {
     fn test_regular_files_are_not_protected() {
         assert!(!ToolExecutor::is_path_protected(Path::new("/workspace/main.rs")), ".rs files should NOT be protected");
         assert!(!ToolExecutor::is_path_protected(Path::new("/workspace/README.md")), ".md files should NOT be protected");
+    }
+
+    #[test]
+    fn test_agent1_skill_execute_is_denied() {
+        let brain = Arc::new(Mutex::new(MetaBrain::new()));
+        let store = SessionStore::open_with_prefix_in_memory("test_agent1_skill_exec")
+            .expect("test store");
+        let store = Arc::new(store);
+        let mut exec = ToolExecutor::new_with_auto_deny(
+            Arc::clone(&brain),
+            "agent1",
+            store,
+            true,
+        ).expect("create executor");
+
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let result = rt.block_on(exec.execute("skill_execute", r#"{"skill_name":"test"}"#));
+
+        match result {
+            Ok(output) => panic!("Expected denial, got: {}", output),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains("Agent1"), "Error must mention Agent1: {}", msg);
+                assert!(msg.contains("skill_execute"), "Error must mention skill_execute: {}", msg);
+                assert!(msg.contains("denied") || msg.contains("not permitted"), "Error must be a denial: {}", msg);
+            }
+        }
     }
