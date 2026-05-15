@@ -127,20 +127,34 @@ impl ToolExecutor {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_delete requires 'path' argument"))?;
                 // Destructive operation: require consent before proceeding
-                if let Some(bridge) = &self.consent_bridge {
-                    let approved = bridge.request_consent(
+                let consent_approved = if let Some(bridge) = &self.consent_bridge {
+                    bridge.request_consent(
                         "fs:delete",
                         &format!("Delete file: {}", raw_path),
-                    ).await;
-                    if !approved {
-                        return Ok(format!(
-                            "[fs:delete] DENIED: consent not granted for {}",
-                            raw_path
-                        ));
-                    }
+                    ).await
+                } else {
+                    true
+                };
+                if !consent_approved {
+                    return Ok(format!(
+                        "[fs:delete] DENIED: consent not granted for {}",
+                        raw_path
+                    ));
                 }
                 // TOCTOU-safe: open first, validate from the fd-derived path
                 let resolved = Self::resolve_and_validate(raw_path)?;
+                // Route consent approval through MetaBrain so subsequent operations
+                // in the same session don't re-prompt.
+                if self.consent_bridge.is_some() {
+                    let mut brain = self.meta_brain.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = brain.grant_path_permission(&resolved, PermissionFlags::FILE_DELETE);
+                    let _ = self.session_store.record_approval(
+                        &self.agent_id,
+                        &format!("{:?}", PermissionFlags::FILE_DELETE),
+                        "path",
+                        &resolved,
+                    );
+                }
                 if !self.check_path_permission(PermissionFlags::FILE_DELETE, &resolved).await? {
                     return Ok(format!("[fs:delete] DENIED: No permission to delete {}", raw_path));
                 }
@@ -178,17 +192,30 @@ impl ToolExecutor {
             "app_open" => {
                 let app_name = args["app_name"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("app_open requires 'app_name' argument"))?;
-                if let Some(bridge) = &self.consent_bridge {
-                    let approved = bridge.request_consent(
+                let consent_approved = if let Some(bridge) = &self.consent_bridge {
+                    bridge.request_consent(
                         "app:open",
                         &format!("Open application: {}", app_name),
-                    ).await;
-                    if !approved {
-                        return Ok(format!(
-                            "[app:open] DENIED: consent not granted for {}",
-                            app_name
-                        ));
-                    }
+                    ).await
+                } else {
+                    true
+                };
+                if !consent_approved {
+                    return Ok(format!(
+                        "[app:open] DENIED: consent not granted for {}",
+                        app_name
+                    ));
+                }
+                // Route consent through MetaBrain to prevent re-prompting
+                if self.consent_bridge.is_some() {
+                    let mut brain = self.meta_brain.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = brain.grant_app_permission(app_name, PermissionFlags::APP_LAUNCH);
+                    let _ = self.session_store.record_approval(
+                        &self.agent_id,
+                        "APP_LAUNCH",
+                        "app",
+                        app_name,
+                    );
                 }
                 if !self.check_app_permission(app_name).await? {
                     return Ok(format!("[app:open] DENIED: No permission to open {}", app_name));
@@ -198,17 +225,39 @@ impl ToolExecutor {
             "url_open" => {
                 let url = args["url"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("url_open requires 'url' argument"))?;
-                if let Some(bridge) = &self.consent_bridge {
-                    let approved = bridge.request_consent(
+                let consent_approved = if let Some(bridge) = &self.consent_bridge {
+                    bridge.request_consent(
                         "url:open",
                         &format!("Open URL: {}", url),
-                    ).await;
-                    if !approved {
-                        return Ok(format!(
-                            "[url:open] DENIED: consent not granted for {}",
-                            url
-                        ));
+                    ).await
+                } else {
+                    true
+                };
+                if !consent_approved {
+                    return Ok(format!(
+                        "[url:open] DENIED: consent not granted for {}",
+                        url
+                    ));
+                }
+                // Route consent through MetaBrain to prevent re-prompting
+                if self.consent_bridge.is_some() {
+                    if let Ok(parsed) = url::Url::parse(url) {
+                        let scheme = parsed.scheme().to_string();
+                        let domain = parsed.host_str().unwrap_or("").to_string();
+                        let mut brain = self.meta_brain.lock().unwrap_or_else(|e| e.into_inner());
+                        if !scheme.is_empty() {
+                            let _ = brain.grant_url_scheme_permission(&scheme, PermissionFlags::URL_OPEN);
+                        }
+                        if !domain.is_empty() {
+                            let _ = brain.grant_domain_permission(&domain, PermissionFlags::NET_OUTBOUND);
+                        }
                     }
+                    let _ = self.session_store.record_approval(
+                        &self.agent_id,
+                        "URL_OPEN",
+                        "url",
+                        url,
+                    );
                 }
                 if !self.check_url_permission(url).await? {
                     return Ok(format!("[url:open] DENIED: No permission to open {}", url));
