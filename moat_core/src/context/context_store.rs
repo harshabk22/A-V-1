@@ -118,7 +118,7 @@ impl ContextStore {
     pub fn prepend_system_addendum(&self, addendum: &str) -> Result<()> {
         let mut msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(first) = msgs.first() {
-            if first.role == Role::System && first.content.len() < MAX_SYSTEM_PROMPT_SIZE {
+            if first.role == Role::System && first.content.len() < Self::MAX_SYSTEM_PROMPT_SIZE {
                 // Still has room — append to the first system message
                 if let Some(first_mut) = msgs.first_mut() {
                     first_mut.content = format!("{}\n{}", first_mut.content, addendum);

@@ -64,7 +64,7 @@ impl ToolExecutor {
             "fs_read" | "read_file" => {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_read requires 'path' argument"))?;
-                let resolved = Self::resolve_path(raw_path);
+                let resolved = Self::resolve_path(raw_path)?;
                 if Self::is_path_protected(Path::new(&resolved)) {
                     return Ok(format!("[fs:read] DENIED: {} is a protected file", raw_path));
                 }
@@ -81,7 +81,7 @@ impl ToolExecutor {
             "fs_write" | "write_file" => {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_write requires 'path' argument"))?;
-                let resolved = Self::resolve_path(raw_path);
+                let resolved = Self::resolve_path(raw_path)?;
                 if Self::is_path_protected(Path::new(&resolved)) {
                     return Ok(format!("[fs:write] DENIED: {} is a protected file", raw_path));
                 }
@@ -103,7 +103,7 @@ impl ToolExecutor {
             "fs_delete" => {
                 let raw_path = args["path"].as_str()
                     .ok_or_else(|| anyhow::anyhow!("fs_delete requires 'path' argument"))?;
-                let resolved = Self::resolve_path(raw_path);
+                let resolved = Self::resolve_path(raw_path)?;
                 if !self.check_path_permission(PermissionFlags::FILE_DELETE, &resolved).await? {
                     return Ok(format!("[fs:delete] DENIED: No permission to delete {}", raw_path));
                 }
@@ -142,7 +142,7 @@ impl ToolExecutor {
                     .ok_or_else(|| anyhow::anyhow!("process_spawn requires 'command' argument"))?;
                 let working_dir_raw = args["working_dir"].as_str()
                     .unwrap_or("~/Desktop/ageex-workspace");
-                let resolved_wd = Self::resolve_path(working_dir_raw);
+                let resolved_wd = Self::resolve_path(working_dir_raw)?;
                 if !self.check_path_permission(PermissionFlags::EXEC, &resolved_wd).await? {
                     return Ok(format!("[process:spawn] DENIED: No permission to run `{}`", command));
                 }
@@ -369,7 +369,7 @@ impl ToolExecutor {
         false
     }
 
-    fn resolve_path(raw: &str) -> String {
+    fn resolve_path(raw: &str) -> Result<String> {
         let expanded = if raw.starts_with("~/") {
             if let Some(home) = dirs::home_dir() {
                 home.to_string_lossy().into_owned() + &raw[1..]
@@ -384,18 +384,22 @@ impl ToolExecutor {
             if let Ok(canonical) = std::fs::canonicalize(&expanded) {
                 let canonical_str = canonical.to_string_lossy().into_owned();
                 if canonical_str != expanded {
-                    eprintln!("[ToolExecutor] Path canonicalized via symlink: {} -> {}", expanded, canonical_str);
+                    return Err(anyhow::anyhow!(
+                        "[security] SYMLINK TRAVERSAL DENIED: {} -> {}",
+                        expanded,
+                        canonical_str
+                    ));
                 }
-                canonical_str
+                Ok(canonical_str)
             } else {
-                expanded
+                Ok(expanded)
             }
         } else {
             let workspace = dirs::home_dir()
                 .unwrap_or_default()
                 .join("Desktop")
                 .join("ageex-workspace");
-            workspace.join(raw).to_string_lossy().into_owned()
+            Ok(workspace.join(raw).to_string_lossy().into_owned())
         }
     }
 

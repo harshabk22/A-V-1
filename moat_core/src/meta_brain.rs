@@ -166,6 +166,16 @@ struct FlushState {
     notify: Arc<Notify>,
 }
 
+impl Clone for FlushState {
+    fn clone(&self) -> Self {
+        Self {
+            db_path: self.db_path.clone(),
+            dirty: Arc::clone(&self.dirty),
+            notify: Arc::clone(&self.notify),
+        }
+    }
+}
+
 pub struct MetaBrain {
     inner: MetaBrainInner,
     flush: Option<FlushState>,
