@@ -11,6 +11,7 @@ pub mod injector;
 pub mod manifest;
 // pub mod mcp;
 pub mod memory;
+pub mod memory_manager;
 pub mod meta_brain;
 pub mod orchestrator;
 pub mod parser;
