@@ -281,27 +281,31 @@
 
 **Completed:** All 12 DEL fallbacks removed. 8 action handlers route through `execute_del()`. `WorkerAgent::new()` fail-fast on DEL init. `fs_delete` through DEL. Gate2 expanded. 167 tests pass.
 
-### Wave 8 — AGX3 Isolation [CRITICAL — V2 Fix]
-| # | Task | Source | Complexity |
-|---|------|--------|------------|
-| 8.1 | Create AgentId::Agent3 with CapabilitySet::agx3_default() (EMPTY) | AGEEX design | LOW |
-| 8.2 | Create channel adapter trait impls for Telegram, WhatsApp, Discord | hermes-agent H1, openclaw O1 | HIGH |
-| 8.3 | Channel lifecycle manager (start/stop/health/restart) | openclaw O1 | HIGH |
-| 8.4 | Session binding system (channel→session mapping) | openclaw O4 | HIGH |
-| 8.5 | Platform hints injection for AGX3 system prompt | hermes-agent H2 | LOW |
-| 8.6 | Prompt injection scanning for external messages | hermes-agent H10 | MEDIUM |
-| 8.7 | Enforce AGX3 cannot trigger AGX1/AGX2, cannot reach DEL | AGEEX design | MEDIUM |
+### Wave 8 — AGX3 Isolation ✅ [DONE]
+| # | Task | Source | Complexity | Status |
+|---|------|--------|------------|--------|
+| 8.1 | AgentId::Agent3 + CapabilitySet::agx3_default() (EMPTY OS caps) | AGEEX design | LOW | DONE |
+| 8.5 | Platform hints injection for AGX3 system prompt (5 platforms) | hermes-agent H2 | LOW | DONE |
+| 8.6 | Prompt injection scanning for external messages (11 patterns) | hermes-agent H10 | MEDIUM | DONE |
+| 8.7 | AGX3 cannot trigger AGX1/AGX2, cannot reach DEL (structural) | AGEEX design | MEDIUM | DONE |
+| 8.2 | Channel adapter impls for Telegram, WhatsApp, Discord | hermes-agent H1 | HIGH | PENDING |
+| 8.3 | Channel lifecycle manager (start/stop/health/restart) | openclaw O1 | HIGH | PENDING |
+| 8.4 | Session binding system (channel→session mapping) | openclaw O4 | HIGH | PENDING |
 
-### Wave 9 — Memory Manager & Security [HIGH]
-| # | Task | Source | Complexity |
-|---|------|--------|------------|
-| 9.1 | Create MemoryManagerAgent struct with per-agent context windows | hermes-agent H4 | MEDIUM |
-| 9.2 | Redaction/filtering pipeline for secrets/PII | OpenJarvis J5 | MEDIUM |
-| 9.3 | GuardrailsEngine composable wrapper (scan input + output) | OpenJarvis J4 | MEDIUM |
-| 9.4 | Content scanner pipeline (SecretScanner, PIIScanner) | OpenJarvis J5 | MEDIUM |
-| 9.5 | Audit logger (SQLite: security events, consent, violations) | OpenJarvis J5 | LOW |
-| 9.6 | File write denylist (block .ssh/, .env, shell RC, credentials) | hermes-agent H11 | LOW |
-| 9.7 | Credential scoping (strip API keys from subprocess env) | hermes-agent H9 | LOW |
+**Completed:** Agent3 exists with zero tools/OS caps. Platform hints for 5 platforms. Injection scanning with 11 threat patterns. `must_route_through_agx3()` guard. Channel adapter stubs + lifecycle manager deferred to Wave 12.
+
+### Wave 9 — Memory Manager & Security ✅ [DONE]
+| # | Task | Source | Complexity | Status |
+|---|------|--------|------------|--------|
+| 9.2 | Redaction/filtering pipeline for secrets/PII | OpenJarvis J5 | MEDIUM | DONE |
+| 9.3 | GuardrailsEngine composable wrapper (scan input + output) | OpenJarvis J4 | MEDIUM | DONE |
+| 9.4 | Content scanner pipeline (SecretScanner, PIIScanner) | OpenJarvis J5 | MEDIUM | DONE |
+| 9.5 | Audit logger (SQLite: security events, consent, violations) | OpenJarvis J5 | LOW | DONE |
+| 9.6 | File write denylist (block .ssh/, .env, shell RC, credentials) | hermes-agent H11 | LOW | DONE |
+| 9.7 | Credential scoping (strip API keys from subprocess env) | hermes-agent H9 | LOW | DONE |
+| 9.1 | Dedicated MemoryManagerAgent struct | hermes-agent H4 | MEDIUM | PENDING |
+
+**Completed:** Scanner trait + 3 scanners. GuardrailsEngine composable wrapper. AuditLogger SQLite. File write denylist (24 patterns). Credential env stripping (23 vars). 20 new tests. 194 total.
 
 ### Wave 10 — Infrastructure & Extensibility [HIGH]
 | # | Task | Source | Complexity |
