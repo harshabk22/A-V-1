@@ -281,7 +281,7 @@ impl SwarmGateway {
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned)
         };
-        let provider_name = spec.api_provider.clone();
+        let provider_name = self.provider_factory.get_default_provider();
         let model_id = model_override.unwrap_or_else(|| spec.model_id.clone());
         let provider = self.provider_factory.provider_for(&provider_name)?;
         let config = PlannerConfig {
@@ -554,7 +554,7 @@ fn parse_agent_specs(markdown: &str) -> Vec<AgentSpec> {
                     .filter(|value| !value.is_empty())
                     .map(ToOwned::to_owned)
             })
-            .unwrap_or_else(|| "nvidia".to_string());
+            .unwrap_or_else(|| "deepseek".to_string());
         let model_id = current_body
             .iter()
             .map(|line| line.trim())
@@ -815,6 +815,12 @@ mod tests {
 
         fn remove_provider_key(&self, _api_provider: &str) -> MoatResult<()> {
             Ok(())
+        }
+
+        fn set_default_provider(&self, _provider: &str) {}
+
+        fn get_default_provider(&self) -> String {
+            "nvidia".to_string()
         }
 
         fn provider_health<'a>(

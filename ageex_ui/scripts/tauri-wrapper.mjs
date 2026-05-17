@@ -16,10 +16,6 @@ const rawArgs = process.argv.slice(2);
 const [command, ...rest] = rawArgs;
 const args = [...rawArgs];
 
-if ((command === "dev" || command === "build") && !rest.includes("--features")) {
-  args.push("--features", "whisper");
-}
-
 const child = spawn(tauriBin, args, {
   cwd: repoRoot,
   stdio: "inherit",

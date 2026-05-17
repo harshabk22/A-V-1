@@ -1,5 +1,6 @@
 #![allow(improper_ctypes)]
 
+#[link(wasm_import_module = "ageex")]
 extern "C" {
     pub fn __ageex_airgap_send(
         op: u32,

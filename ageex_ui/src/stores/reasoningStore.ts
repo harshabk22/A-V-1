@@ -4,6 +4,7 @@ import type {
   AirgapEnvelopeEvent,
   SecurityViolationEvent,
   AgentYieldEvent,
+  AirgapResponseEvent,
 } from "../types/ipc";
 
 export interface AuditEntry {
@@ -29,6 +30,7 @@ interface ReasoningState {
   handleEnvelopeEvent: (event: AirgapEnvelopeEvent) => void;
   handleViolationEvent: (event: SecurityViolationEvent) => void;
   handleYieldEvent: (event: AgentYieldEvent) => void;
+  handleAirgapResponseEvent: (event: AirgapResponseEvent) => void;
   clearAll: () => void;
 }
 
@@ -124,6 +126,17 @@ export const useReasoningStore = create<ReasoningState>((set, get) => ({
       envelopesSent: event.envelopesSent,
       yieldMessage: event.yieldMessage,
     });
+  },
+
+  handleAirgapResponseEvent: (event) => {
+    const entry: AuditEntry = {
+      id: makeAuditId(),
+      timestamp: Date.now(),
+      kind: "step",
+      agentId: event.agentId,
+      message: `DEL response seq=${event.seq} op=${event.op} ${event.isSuccess ? "success" : "error"}`,
+    };
+    get().pushAudit(entry);
   },
 
   clearAll: () =>

@@ -6,8 +6,9 @@ mod overlay;
 
 use keyring::Entry;
 use moat_core::config::{
-    default_provider_profiles, load_provider_profiles, load_user_document, nvidia_account_name,
-    sqlite_db_path, user_md_path, KEYCHAIN_SERVICE_NAME, SettingsState, SettingsUpdate,
+    deepseek_account_name, default_provider_profiles, load_provider_profiles, load_user_document,
+    nvidia_account_name, sqlite_db_path, user_md_path, KEYCHAIN_SERVICE_NAME, SettingsState,
+    SettingsUpdate,
 };
 use moat_core::consent::{ConsentBridge, ConsentDecision};
 use moat_core::external_api::ExternalApiConfig;
@@ -789,6 +790,174 @@ async fn validate_nvidia_inference(
     Ok(true)
 }
 
+// ─── DeepSeek Key Resolution ────────────────────────────────────────
+
+#[tauri::command]
+async fn resolve_stored_deepseek_api_key(
+    state: &tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let kernel = state
+        .kernel
+        .lock()
+        .await
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| KERNEL_BOOTING_ERROR.to_string())?;
+    let root = kernel.settings_swarm_root_for_ui();
+    let doc = match load_user_document(root.join("USER.md")).await {
+        Ok(doc) => Some(doc),
+        Err(_) => load_user_document(user_md_path()).await.ok(),
+    };
+    if let Some(key) = doc
+        .as_ref()
+        .and_then(|doc| doc.frontmatter.deepseek_api_key.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(key.to_string());
+    }
+
+    if let Ok(env_key) = std::env::var("DEEPSEEK_API_KEY") {
+        let trimmed = env_key.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let profiles = load_provider_profiles().unwrap_or_else(|_| default_provider_profiles());
+    for profile in profiles.deepseek_profiles {
+        let account = deepseek_account_name(&profile.id);
+        let entry = Entry::new(KEYCHAIN_SERVICE_NAME, &account)
+            .map_err(|err| format!("Failed to open DeepSeek keychain entry: {err}"))?;
+        match entry.get_password() {
+            Ok(secret) => {
+                let trimmed = secret.trim();
+                if !trimmed.is_empty() {
+                    return Ok(trimmed.to_string());
+                }
+            }
+            Err(keyring::Error::NoEntry) => continue,
+            Err(err) => {
+                return Err(format!("Failed to read DeepSeek keychain entry: {err}"));
+            }
+        }
+    }
+
+    Err("No stored DeepSeek API key found.".to_string())
+}
+
+async fn validate_deepseek_inference_request(
+    api_key: &str,
+    model_name: &str,
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.deepseek.com/chat/completions")
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": model_name,
+            "messages": [
+                {"role": "user", "content": "ping"}
+            ],
+            "max_tokens": 1,
+            "temperature": 0.0,
+        }))
+        .send()
+        .await
+        .map_err(|err| format!("DeepSeek request failed: {err}"))?;
+
+    let status = response.status().as_u16();
+    if status == 200 {
+        Ok(())
+    } else if matches!(status, 400 | 401 | 403 | 404) {
+        Err("Invalid API Key or model not accessible".to_string())
+    } else {
+        let body = response.text().await.unwrap_or_default();
+        let detail = body.chars().take(200).collect::<String>();
+        Err(format!(
+            "DeepSeek validation failed (HTTP {}): {}",
+            status, detail
+        ))
+    }
+}
+
+#[tauri::command]
+async fn fetch_deepseek_models(
+    api_key: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let mut resolved_key = api_key.trim().to_string();
+    if resolved_key.is_empty() || resolved_key == "__stored__" {
+        resolved_key = resolve_stored_deepseek_api_key(&state).await?;
+    }
+    if resolved_key.is_empty() {
+        return Err("No stored DeepSeek API key found.".to_string());
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://api.deepseek.com/models")
+        .bearer_auth(resolved_key)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|err| format!("DeepSeek request failed: {err}"))?;
+
+    let status = response.status().as_u16();
+    if status == 200 {
+        let payload: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|err| format!("Failed to parse DeepSeek models catalog: {err}"))?;
+        let mut models: Vec<String> = payload
+            .get("data")
+            .and_then(|d| d.as_array())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|e| e.get("id").and_then(|id| id.as_str()).map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if models.is_empty() {
+            models = vec![
+                "deepseek-chat".to_string(),
+                "deepseek-reasoner".to_string(),
+            ];
+        }
+        models.sort();
+        models.dedup();
+        Ok(models)
+    } else if matches!(status, 400 | 401 | 403 | 404) {
+        Err("Invalid API Key or unable to fetch DeepSeek models".to_string())
+    } else {
+        let body = response.text().await.unwrap_or_default();
+        let detail = body.chars().take(200).collect::<String>();
+        Err(format!(
+            "Failed to fetch DeepSeek models (HTTP {}): {}",
+            status, detail
+        ))
+    }
+}
+
+#[tauri::command]
+async fn validate_deepseek_inference(
+    api_key: String,
+    model_name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let mut resolved_key = api_key.trim().to_string();
+    if resolved_key.is_empty() || resolved_key == "__stored__" {
+        resolved_key = resolve_stored_deepseek_api_key(&state).await?;
+    }
+    if resolved_key.is_empty() {
+        return Err("No stored DeepSeek API key found.".to_string());
+    }
+
+    validate_deepseek_inference_request(&resolved_key, &model_name).await?;
+    Ok(true)
+}
+
 #[tauri::command]
 async fn get_memory_overview(
     state: tauri::State<'_, AppState>,
@@ -995,6 +1164,17 @@ async fn step_agent(
             }),
         );
     }
+    for v in &outcome.violations {
+        let _ = app.emit(
+            "reasoning-security-violation",
+            serde_json::json!({
+                "agentId": agent_key,
+                "seq": v.seq,
+                "op": v.op,
+                "violation": v.violation,
+            }),
+        );
+    }
     Ok(StepOutcomePayload {
         agent_yielded: outcome.agent_yielded,
         yield_message: String::from_utf8_lossy(&outcome.yield_message).to_string(),
@@ -1109,21 +1289,29 @@ pub fn run() {
             let envelope_app_handle = app.handle().clone();
             {
                 let bridge = Arc::clone(&reasoning_bridge);
+                let poller_app = envelope_app_handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    let mut guard = bridge.lock().await;
-                    match guard.init_engine().await {
-                        Ok(()) => {
-                            let _ = envelope_app_handle.emit(
-                                "live-telemetry",
-                                "[REASONING] Engine initialized. Ready for WASM agents.",
-                            );
+                    let rx = {
+                        let mut guard = bridge.lock().await;
+                        match guard.init_engine().await {
+                            Ok(()) => {
+                                let _ = envelope_app_handle.emit(
+                                    "live-telemetry",
+                                    "[REASONING] Engine initialized. Ready for WASM agents.",
+                                );
+                                guard.rx.take()
+                            }
+                            Err(e) => {
+                                let _ = envelope_app_handle.emit(
+                                    "live-telemetry",
+                                    format!("[REASONING] Engine init failed: {}", e),
+                                );
+                                None
+                            }
                         }
-                        Err(e) => {
-                            let _ = envelope_app_handle.emit(
-                                "live-telemetry",
-                                format!("[REASONING] Engine init failed: {}", e),
-                            );
-                        }
+                    };
+                    if let Some(rx) = rx {
+                        crate::reasoning_bridge::start_envelope_poller(poller_app, rx);
                     }
                 });
             }
@@ -1234,6 +1422,8 @@ pub fn run() {
             resolve_choice,
             fetch_nvidia_models,
             validate_nvidia_inference,
+            fetch_deepseek_models,
+            validate_deepseek_inference,
             init_reasoning_engine,
             instantiate_agent,
             step_agent,

@@ -3,10 +3,11 @@ use std::sync::atomic::Ordering;
 
 use ageex_wire::codec::wire;
 use ageex_wire::AirgapError;
+use tokio::sync::oneshot;
 use tracing;
 use wasmtime::*;
 
-use crate::engine::{AirgapEnvelope, StoreData};
+use crate::engine::{AirgapBundle, AirgapEnvelope, StoreData};
 
 const AERR_NONE: i32 = AirgapError::None as i32;
 const AERR_INVALID_OP: i32 = AirgapError::InvalidOp as i32;
@@ -231,16 +232,21 @@ fn semantic_validate(req: &wire::ParsedRequest<'_>) -> Result<(), String> {
     Ok(())
 }
 
-// ─── Core processing (sync; called from inside async wrappers) ───────────
+// ─── Async processing: sends envelope + oneshot, awaits DEL response ─────
 
-fn process_airgap_send(
+async fn process_airgap_send_async(
     op: u32,
-    raw: &[u8],
+    raw: Vec<u8>,
     agent_id: [u8; 32],
     seq: u64,
-    tx: &tokio::sync::mpsc::UnboundedSender<AirgapEnvelope>,
+    tx: &tokio::sync::mpsc::UnboundedSender<AirgapBundle>,
+    mem: &Memory,
+    caller: &mut Caller<'_, StoreData>,
+    resp_ptr: u32,
+    resp_cap: u32,
 ) -> i32 {
-    let parsed = match wire::parse_request(raw) {
+    let raw_for_envelope = raw.clone();
+    let parsed = match wire::parse_request(&raw) {
         Some(p) => p,
         None => {
             tracing::warn!(target: "ageex.security", agent_id=?agent_id, seq, "airgap_send: malformed payload");
@@ -256,7 +262,7 @@ fn process_airgap_send(
             seq,
             declared_op,
             wire_op = op,
-            "airgap_send: opcode mismatch — agent declared {declared_op:#x}, wire tag was {op:#x}"
+            "airgap_send: opcode mismatch"
         );
         return AERR_INVALID_OP;
     }
@@ -270,6 +276,13 @@ fn process_airgap_send(
             violation = %violation,
             "SECURITY VIOLATION: agent attempted illegal capability request"
         );
+        if let Ok(mut guard) = caller.data().violations.lock() {
+            guard.push(crate::engine::ViolationRecord {
+                seq,
+                op: parsed.op_str().to_string(),
+                violation: violation.clone(),
+            });
+        }
         return AERR_PERMISSION_DENIED;
     }
 
@@ -277,10 +290,13 @@ fn process_airgap_send(
         agent_id,
         seq,
         op: parsed.op(),
-        request_bytes: raw.to_vec(),
+        request_bytes: raw_for_envelope,
     };
 
-    if tx.send(envelope).is_err() {
+    let (response_tx, response_rx) = oneshot::channel();
+    let bundle: AirgapBundle = (envelope, response_tx);
+
+    if tx.send(bundle).is_err() {
         tracing::error!(target: "ageex.reasoning", agent_id=?agent_id, seq, "airgap channel closed");
         return AERR_HOST_ERROR;
     }
@@ -290,7 +306,32 @@ fn process_airgap_send(
         agent_id = ?agent_id,
         seq,
         op = %parsed.op_str(),
-        "airgap_send: enqueued"
+        "airgap_send: enqueued, awaiting DEL response"
+    );
+
+    let response = match response_rx.await {
+        Ok(r) => r,
+        Err(_) => {
+            tracing::error!(target: "ageex.reasoning", agent_id=?agent_id, seq, "oneshot sender dropped");
+            return AERR_HOST_ERROR;
+        }
+    };
+
+    let response_bytes = response.encode_response();
+
+    if resp_cap as usize >= response_bytes.len() && resp_ptr > 0 {
+        if let Err(e) = mem.write(caller, resp_ptr as usize, &response_bytes) {
+            tracing::error!(target: "ageex.reasoning", agent_id=?agent_id, seq, "write to WASM memory failed: {:?}", e);
+            return AERR_MEMORY_OOB;
+        }
+    }
+
+    tracing::debug!(
+        target: "ageex.reasoning",
+        agent_id = ?agent_id,
+        seq,
+        "airgap_send: response written to WASM memory ({} bytes)",
+        response_bytes.len()
     );
 
     AERR_NONE
@@ -301,7 +342,7 @@ fn process_mem_request(
     raw: &[u8],
     agent_id: [u8; 32],
     seq: u64,
-    tx: &tokio::sync::mpsc::UnboundedSender<AirgapEnvelope>,
+    tx: &tokio::sync::mpsc::UnboundedSender<AirgapBundle>,
 ) -> i32 {
     let parsed = match wire::parse_request(raw) {
         Some(p) => p,
@@ -330,7 +371,10 @@ fn process_mem_request(
         request_bytes: raw.to_vec(),
     };
 
-    let _ = tx.send(envelope);
+    let (response_tx, _response_rx) = oneshot::channel();
+    let bundle: AirgapBundle = (envelope, response_tx);
+
+    let _ = tx.send(bundle);
 
     AERR_NONE
 }
@@ -339,7 +383,7 @@ fn process_consent_poll(
     raw: &[u8],
     agent_id: [u8; 32],
     seq: u64,
-    tx: &tokio::sync::mpsc::UnboundedSender<AirgapEnvelope>,
+    tx: &tokio::sync::mpsc::UnboundedSender<AirgapBundle>,
 ) -> u32 {
     let parsed = match wire::parse_request(raw) {
         Some(p) => p,
@@ -368,7 +412,10 @@ fn process_consent_poll(
         request_bytes: raw.to_vec(),
     };
 
-    let _ = tx.send(envelope);
+    let (response_tx, _response_rx) = oneshot::channel();
+    let bundle: AirgapBundle = (envelope, response_tx);
+
+    let _ = tx.send(bundle);
 
     0
 }
@@ -389,17 +436,15 @@ fn log_agent_message(agent_id: [u8; 32], level: u32, msg_bytes: &[u8]) {
 
 // ─── Register all host imports into the linker
 
-/// wasmtime 25.x `func_wrap_async` signature:
-///   `Fn(Caller<T>, Params) -> Box<dyn Future<Output = Args> + Send + '_>`
-///   where Params = wasm param tuple, Args = wasm return tuple.
+/// Register all host imports for the `"ageex"` namespace.
 pub fn register_imports(linker: &mut Linker<StoreData>) -> Result<(), Error> {
-    // ── __ageex_airgap_send(op:u32, ptr:u32, len:u32, rptr:u32, rcap:u32) → i32 ──
+    // ── __ageex_airgap_send(op:u32, req_ptr:u32, req_len:u32, resp_ptr:u32, resp_cap:u32) → i32 ──
 
     linker.func_wrap_async(
         "ageex",
         "__ageex_airgap_send",
         |mut caller: Caller<'_, StoreData>,
-         (op, req_ptr, req_len, _resp_ptr, _resp_cap): (u32, u32, u32, u32, u32)|
+         (op, req_ptr, req_len, resp_ptr, resp_cap): (u32, u32, u32, u32, u32)|
          -> Box<dyn Future<Output = (i32,)> + Send + '_> {
             let mem = match get_memory(&mut caller) {
                 Ok(m) => m,
@@ -418,25 +463,21 @@ pub fn register_imports(linker: &mut Linker<StoreData>) -> Result<(), Error> {
             let raw = match try_read_mem(&caller, &mem, req_ptr, req_len) {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!(
-                        target: "ageex.security",
-                        agent_id = ?agent_id,
-                        seq,
-                        req_ptr,
-                        req_len,
-                        "airgap_send: OOB read"
-                    );
+                    tracing::error!(target: "ageex.security", agent_id=?agent_id, seq, "airgap_send: OOB read");
                     return Box::new(std::future::ready((e,)));
                 }
             };
 
             Box::new(async move {
-                (process_airgap_send(op, &raw, agent_id, seq, &tx),)
+                let status = process_airgap_send_async(
+                    op, raw, agent_id, seq, &tx, &mem, &mut caller, resp_ptr, resp_cap,
+                ).await;
+                (status,)
             })
         },
     )?;
 
-    // ── __ageex_mem_request(op, kptr, klen, vptr, vlen, bptr, bcap) → i32 ──
+    // ── __ageex_mem_request(op, req_ptr, req_len, val_ptr, val_len, buf_ptr, buf_cap) → i32 ──
 
     linker.func_wrap_async(
         "ageex",
@@ -558,13 +599,6 @@ pub fn register_imports(linker: &mut Linker<StoreData>) -> Result<(), Error> {
                 *guard = msg_bytes;
             }
             caller.data().yield_flag.store(true, Ordering::Release);
-
-            tracing::debug!(
-                target: "ageex.reasoning",
-                agent_id = ?caller.data().agent_id,
-                seq = caller.data().seq_counter.load(Ordering::Relaxed),
-                "agent_yield_done"
-            );
 
             Box::new(std::future::ready((0,)))
         },

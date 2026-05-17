@@ -1,4 +1,5 @@
-use ageex_reasoning::{AirgapEnvelope, ReasoningEngine, ReasoningInstance};
+use ageex_reasoning::{AirgapBundle, AirgapEnvelope, ReasoningEngine, ReasoningInstance};
+use ageex_wire::AirgapRequest;
 use serde::Serialize;
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
@@ -34,7 +35,7 @@ pub struct StepOutcomePayload {
 pub struct ReasoningBridge {
     pub engine: Option<ReasoningEngine>,
     pub instances: HashMap<String, ReasoningInstance>,
-    pub rx: Option<tokio::sync::mpsc::UnboundedReceiver<AirgapEnvelope>>,
+    pub rx: Option<tokio::sync::mpsc::UnboundedReceiver<AirgapBundle>>,
 }
 
 impl ReasoningBridge {
@@ -75,20 +76,41 @@ impl ReasoningBridge {
     }
 }
 
-pub fn start_envelope_poller(app: AppHandle, rx: tokio::sync::mpsc::UnboundedReceiver<AirgapEnvelope>) {
+pub fn start_envelope_poller(app: AppHandle, rx: tokio::sync::mpsc::UnboundedReceiver<AirgapBundle>) {
     tauri::async_runtime::spawn(async move {
         let mut rx = rx;
-        while let Some(envelope) = rx.recv().await {
-            let agent_id = hex::encode(envelope.agent_id);
+        while let Some((envelope, response_tx)) = rx.recv().await {
+            let request = AirgapRequest {
+                agent_id: envelope.agent_id,
+                seq: envelope.seq,
+                op: envelope.op,
+                payload: envelope.request_bytes,
+            };
+
+            let agent_id_hex = hex::encode(envelope.agent_id);
+
             let _ = app.emit(
                 "reasoning-airgap-envelope",
                 serde_json::json!({
-                    "agentId": agent_id,
+                    "agentId": agent_id_hex,
                     "seq": envelope.seq,
                     "op": envelope.op.name(),
-                    "requestBytes": envelope.request_bytes,
                 }),
             );
+
+            let response = moat_core::airgap::handle_airgap_request(request);
+
+            let _ = app.emit(
+                "reasoning-airgap-response",
+                serde_json::json!({
+                    "agentId": agent_id_hex,
+                    "seq": response.seq,
+                    "op": response.op.name(),
+                    "is_success": matches!(response.result, ageex_wire::AirgapResult::Success(_)),
+                }),
+            );
+
+            let _ = response_tx.send(response);
         }
     });
 }

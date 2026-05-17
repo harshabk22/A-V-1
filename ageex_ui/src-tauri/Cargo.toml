@@ -37,6 +37,7 @@ objc = "0.2"
 # Link to our local Zero-Trust Kernel
 moat_core = { path = "../../moat_core" }
 ageex_reasoning = { path = "../../crates/ageex_reasoning" }
+ageex_wire = { path = "../../crates/ageex_wire" }
 tokio-tungstenite = "0.29.0"
 futures-util = "0.3.32"
 base64 = "0.22"

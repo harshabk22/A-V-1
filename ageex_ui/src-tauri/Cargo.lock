@@ -73,6 +73,7 @@ dependencies = [
  "accessibility-sys",
  "active-win-pos-rs",
  "ageex_reasoning",
+ "ageex_wire",
  "arboard",
  "base64 0.22.1",
  "blake3",
@@ -84,6 +85,7 @@ dependencies = [
  "hex",
  "keyring",
  "moat_core",
+ "objc",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -431,6 +433,61 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "axum"
+version = "0.7.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
+dependencies = [
+ "async-trait",
+ "axum-core",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "itoa",
+ "matchit",
+ "memchr",
+ "mime",
+ "percent-encoding",
+ "pin-project-lite",
+ "rustversion",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
+ "sync_wrapper",
+ "tokio",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
+name = "axum-core"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09f2bd6146b97ae3359fa0cc6d6b376d9539582c7b4220f041a33ec24c226199"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "rustversion",
+ "sync_wrapper",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
 name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -470,29 +527,6 @@ dependencies = [
  "lazycell",
  "log",
  "peeking_take_while",
- "prettyplease",
- "proc-macro2",
- "quote",
- "regex",
- "rustc-hash 1.1.0",
- "shlex",
- "syn 2.0.117",
- "which",
-]
-
-[[package]]
-name = "bindgen"
-version = "0.69.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "271383c67ccabffb7381723dea0672a673f292304fcb45c01cc648c7a8d58088"
-dependencies = [
- "bitflags 2.11.0",
- "cexpr",
- "clang-sys",
- "itertools",
- "lazy_static",
- "lazycell",
- "log",
  "prettyplease",
  "proc-macro2",
  "quote",
@@ -913,15 +947,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
 dependencies = [
  "error-code",
-]
-
-[[package]]
-name = "cmake"
-version = "0.1.58"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
-dependencies = [
- "cc",
 ]
 
 [[package]]
@@ -2132,12 +2157,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs_extra"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
-
-[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2792,6 +2811,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hyper"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2804,6 +2829,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "pin-utils",
@@ -3553,6 +3579,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
 
 [[package]]
+name = "matchit"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
+
+[[package]]
 name = "maybe-owned"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3632,8 +3664,11 @@ name = "moat_core"
 version = "0.1.0"
 dependencies = [
  "active-win-pos-rs",
+ "ageex_wire",
+ "anyhow",
  "arboard",
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "bincode",
  "bit-vec 0.9.1",
@@ -3650,6 +3685,7 @@ dependencies = [
  "futures-util",
  "globset",
  "keyring",
+ "libc",
  "notify",
  "parking_lot",
  "petgraph",
@@ -3667,12 +3703,14 @@ dependencies = [
  "tokio-cron-scheduler",
  "tokio-tungstenite",
  "tokio-util",
+ "toml 0.8.23",
+ "tower",
+ "tower-http",
  "tracing",
  "url",
  "uuid",
  "wasmtime",
  "wasmtime-wasi",
- "whisper-rs",
 ]
 
 [[package]]
@@ -5353,6 +5391,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_repr"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6471,6 +6520,7 @@ dependencies = [
  "tokio",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -6484,6 +6534,7 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
+ "http-body-util",
  "iri-string",
  "pin-project-lite",
  "tower",
@@ -6509,6 +6560,7 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
@@ -7444,27 +7496,6 @@ dependencies = [
  "home",
  "once_cell",
  "rustix 0.38.44",
-]
-
-[[package]]
-name = "whisper-rs"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed7a191078e189d96d029244ab1dff159775adec71dc89a222e9bb9d21a7d161"
-dependencies = [
- "whisper-rs-sys",
-]
-
-[[package]]
-name = "whisper-rs-sys"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2834f4ca6472b02748c6c282a60cea538f962428f79e685c3205a08efd711336"
-dependencies = [
- "bindgen 0.69.5",
- "cfg-if",
- "cmake",
- "fs_extra",
 ]
 
 [[package]]

@@ -3827,6 +3827,11 @@ impl Orchestrator {
                 }];
                 messages.extend(snapshot_context(&context_trace).await);
                 let llm_tools = Some(self.planner.build_llm_tools());
+
+                if let Some(tx) = &status_tx {
+                    let _ = tx.send("__TOOL_STATUS__:🤔 Thinking...".to_string()).await;
+                }
+
                 let (raw, tokens) = match self
                     .planner
                     .generate_intent_tools(messages, llm_tools)
@@ -3908,7 +3913,7 @@ impl Orchestrator {
                         raw.trim()
                     };
                     if !monologue.is_empty() {
-                        let _ = tx.send(format!("🤖 Agent Thoughts: \n{}", monologue)).await;
+                        let _ = tx.send(format!("__TOOL_STATUS__:🤖 {}", monologue)).await;
                     }
                 }
 
@@ -4598,18 +4603,18 @@ impl Orchestrator {
                         },
                     )
                     .await;
+                    if found.starts_with("No relevant session transcripts") {
+                        continue;
+                    }
+                    if found.starts_with("No relevant session transcripts") {
+                        continue;
+                    }
                     results.push(SubTaskResult {
                         subtask_id: turns,
                         action: intent.action.clone(),
                         target: intent.target.clone(),
-                        status: if found.starts_with("No relevant session transcripts") {
-                            TaskStatus::SoftDenial {
-                                reason: found.clone(),
-                            }
-                        } else {
-                            TaskStatus::Success {
-                                stdout: format!("Searched session transcripts for: {}", query),
-                            }
+                        status: TaskStatus::Success {
+                            stdout: format!("Searched session transcripts for: {}", query),
                         },
                         elapsed: Duration::ZERO,
                         tokens_used: tokens,
@@ -4695,6 +4700,16 @@ impl Orchestrator {
                 }
 
                 let start = std::time::Instant::now();
+
+                if let Some(tx) = &status_tx {
+                    let target_str = if intent.target.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" → {}", intent.target)
+                    };
+                    let _ = tx.send(format!("__TOOL_STATUS__:🛠️ {}{}", intent.action, target_str)).await;
+                }
+
                 let mut status = self
                     .worker
                     .execute_capability_task(
@@ -4764,6 +4779,38 @@ impl Orchestrator {
                     TaskStatus::Blocked { .. } => "BLOCKED".into(),
                     TaskStatus::Cancelled { stage } => format!("CANCELLED at: {}", stage),
                 };
+
+                if let Some(tx) = &status_tx {
+                    match &status {
+                        TaskStatus::Success { .. } => {
+                            let _ = tx
+                                .send(format!(
+                                    "__TOOL_STATUS__:✅ {} completed ({:.0}ms)",
+                                    intent.action,
+                                    start.elapsed().as_secs_f64() * 1000.0
+                                ))
+                                .await;
+                        }
+                        TaskStatus::Failed { stderr, .. } => {
+                            let reason = stderr.chars().take(120).collect::<String>();
+                            let _ = tx
+                                .send(format!(
+                                    "__TOOL_STATUS__:❌ {} failed: {}",
+                                    intent.action, reason
+                                ))
+                                .await;
+                        }
+                        TaskStatus::SoftDenial { reason } => {
+                            let _ = tx
+                                .send(format!(
+                                    "__TOOL_STATUS__:⛔ {} denied: {}",
+                                    intent.action, reason
+                                ))
+                                .await;
+                        }
+                        _ => {}
+                    }
+                }
 
                 // ── Record SoftDenial in DAG denial cache ───────────────────
                 if let TaskStatus::SoftDenial { .. } = &status {

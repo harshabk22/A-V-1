@@ -4,42 +4,39 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import ChatInterface from "./ChatInterface";
 import ConsentModal from "./ConsentModal";
 import SettingsModal from "./SettingsModal";
-import TelemetryDrawer from "./TelemetryDrawer";
 import { useChatStore } from "../stores/chatStore";
 import { useReasoningStore } from "../stores/reasoningStore";
 import { useConsentStore } from "../stores/consentStore";
 import { useSettingsStore } from "../stores/settingsStore";
-import { useTelemetryStore } from "../stores/telemetryStore";
 import {
-  type BackgroundErrorEvent,
   CONSENT_EVENT_NAME,
-  KERNEL_BOOTING_ERROR,
-  KERNEL_READY_EVENT_NAME,
   LIVE_TELEMETRY_EVENT_NAME,
   GATEWAY_SERVER_EVENT_NAME,
-  type ConsentRequest,
-  type GatewaySessionContext,
-  type MemoryOverview,
-  type GatewayServerEvent,
-  type GatewaySessionRecord,
-  type ExecuteTaskResponse,
-  parseWorkerContextRequestTelemetry,
-  type SentinelRuleRecord,
-  type SentinelTriggerType,
-  type SettingsState,
-  type SettingsUpdate,
-  type ShortcutRecord,
-  parseAskChoiceTelemetry,
-  parseBackgroundErrorTelemetry,
+  KERNEL_READY_EVENT_NAME,
+  KERNEL_BOOTING_ERROR,
   REASONING_ENVELOPE_EVENT,
   REASONING_VIOLATION_EVENT,
   REASONING_YIELD_EVENT,
+  REASONING_RESPONSE_EVENT,
+  parseAskChoiceTelemetry,
+  parseBackgroundErrorTelemetry,
+  parseWorkerContextRequestTelemetry,
+  type BackgroundErrorEvent,
+  type ConsentRequest,
+  type MemoryOverview,
+  type GatewaySessionRecord,
+  type GatewaySessionContext,
+  type GatewayServerEvent,
   type AirgapEnvelopeEvent,
   type SecurityViolationEvent,
   type AgentYieldEvent,
+  type AirgapResponseEvent,
+  type SettingsState,
+  type SettingsUpdate,
+  type ExecuteTaskResponse,
 } from "../types/ipc";
 
-function createTelemetryId(prefix: string): string {
+function makeId(prefix: string): string {
   return `${prefix}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 }
 
@@ -101,10 +98,7 @@ function FaultBanner({
 export default function AppShell() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
-  const [isAutomationBusy, setIsAutomationBusy] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [shortcuts, setShortcuts] = useState<ShortcutRecord[]>([]);
-  const [sentinelRules, setSentinelRules] = useState<SentinelRuleRecord[]>([]);
   const [faults, setFaults] = useState<BackgroundErrorEvent[]>([]);
   const [memoryOverview, setMemoryOverview] = useState<MemoryOverview | null>(null);
   const [gatewaySessions, setGatewaySessions] = useState<GatewaySessionRecord[]>([]);
@@ -135,8 +129,6 @@ export default function AppShell() {
   const applyRoutingUpdate = useSettingsStore((state) => state.applyRoutingUpdate);
   const clearSettingsState = useSettingsStore((state) => state.clearSettings);
   const addRequest = useConsentStore((state) => state.addRequest);
-  const pushTelemetry = useTelemetryStore((state) => state.pushEvent);
-  const clearTelemetry = useTelemetryStore((state) => state.clear);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -177,16 +169,10 @@ export default function AppShell() {
       unlisteners.push(
         await listen<string>(LIVE_TELEMETRY_EVENT_NAME, (event) => {
           const payload = String(event.payload);
+
           const askChoice = parseAskChoiceTelemetry(payload);
           if (askChoice) {
             addChoiceMessage(askChoice.context, askChoice.options, askChoice.request_id);
-            pushTelemetry({
-              id: createTelemetryId("choice"),
-              kind: "ask_choice",
-              summary: askChoice.context,
-              raw: payload,
-              createdAt: Date.now(),
-            });
             return;
           }
 
@@ -196,13 +182,12 @@ export default function AppShell() {
               const next = [backgroundFault, ...current];
               return next.slice(0, 5);
             });
-            pushTelemetry({
-              id: createTelemetryId("fault"),
-              kind: "status",
-              summary: `${backgroundFault.severity}: ${backgroundFault.message}`,
-              raw: payload,
-              createdAt: Date.now(),
-            });
+            return;
+          }
+
+          if (payload.startsWith("__TOOL_STATUS__:")) {
+            const statusMsg = payload.slice("__TOOL_STATUS__:".length);
+            useChatStore.getState().setStatusText(statusMsg);
             return;
           }
 
@@ -211,23 +196,8 @@ export default function AppShell() {
             addSystemMessage(
               `[WORKER CONTEXT REQUEST]\n${workerContext.task_id} · ${workerContext.question}\nBlocking: ${workerContext.blocking ? "yes" : "no"} · Timeout: ${workerContext.timeout_secs}s`,
             );
-            pushTelemetry({
-              id: createTelemetryId("worker-context"),
-              kind: "status",
-              summary: workerContext.question,
-              raw: payload,
-              createdAt: Date.now(),
-            });
             return;
           }
-
-          pushTelemetry({
-            id: createTelemetryId("status"),
-            kind: "status",
-            summary: payload,
-            raw: payload,
-            createdAt: Date.now(),
-          });
         }),
       );
 
@@ -249,16 +219,6 @@ export default function AppShell() {
               content: gatewayEvent.text,
               is_partial: true,
               role: "agent",
-            });
-            pushTelemetry({
-              id: createTelemetryId("stream"),
-              kind: "stream",
-              summary: gatewayEvent.text,
-              raw: gatewayEvent.text,
-              createdAt: Date.now(),
-              agentId: streamKey,
-              turn: 0,
-              isPartial: true,
             });
             return;
           }
@@ -342,6 +302,11 @@ export default function AppShell() {
           useReasoningStore.getState().handleYieldEvent(event.payload);
         }),
       );
+      unlisteners.push(
+        await listen<AirgapResponseEvent>(REASONING_RESPONSE_EVENT, (event) => {
+          useReasoningStore.getState().handleAirgapResponseEvent(event.payload);
+        }),
+      );
     };
 
     void attach();
@@ -395,7 +360,6 @@ export default function AppShell() {
     addChoiceMessage,
     addSystemMessage,
     addRequest,
-    pushTelemetry,
     setBooting,
     setKnowledgeEntries,
     setStatusText,
@@ -450,15 +414,6 @@ export default function AppShell() {
     }
   };
 
-  const refreshAutomation = async () => {
-    const [nextShortcuts, nextRules] = await Promise.all([
-      invoke<ShortcutRecord[]>("list_shortcuts"),
-      invoke<SentinelRuleRecord[]>("list_sentinel_rules"),
-    ]);
-    setShortcuts(nextShortcuts);
-    setSentinelRules(nextRules);
-  };
-
   const openSettings = async () => {
     const state = useChatStore.getState();
     if (state.isBooting) {
@@ -468,18 +423,12 @@ export default function AppShell() {
     setSettingsError(null);
     setIsSettingsOpen(true);
     try {
-      const [nextSettings, nextShortcuts, nextRules] = await Promise.all([
+      const [nextSettings] = await Promise.all([
         invoke<SettingsState>("get_settings"),
-        invoke<ShortcutRecord[]>("list_shortcuts"),
-        invoke<SentinelRuleRecord[]>("list_sentinel_rules"),
       ]);
       setSettingsState(nextSettings);
-      setShortcuts(nextShortcuts);
-      setSentinelRules(nextRules);
     } catch (error) {
       clearSettingsState();
-      setShortcuts([]);
-      setSentinelRules([]);
       setSettingsError(String(error));
     }
   };
@@ -498,84 +447,6 @@ export default function AppShell() {
       setSettingsError(String(error));
     } finally {
       setIsSavingSettings(false);
-    }
-  };
-
-  const handleSaveShortcut = async (triggerName: string, workflowJson: string) => {
-    setIsAutomationBusy(true);
-    setSettingsError(null);
-    try {
-      await invoke("save_shortcut", { triggerName, workflowJson });
-      await refreshAutomation();
-      addSystemMessage(`[AUTOMATION UPDATED]\nSaved shortcut ${triggerName.trim()}.`);
-    } catch (error) {
-      setSettingsError(String(error));
-    } finally {
-      setIsAutomationBusy(false);
-    }
-  };
-
-  const handleDeleteShortcut = async (triggerName: string) => {
-    setIsAutomationBusy(true);
-    setSettingsError(null);
-    try {
-      await invoke("delete_shortcut", { triggerName });
-      await refreshAutomation();
-      addSystemMessage(`[AUTOMATION UPDATED]\nDeleted shortcut ${triggerName.trim()}.`);
-    } catch (error) {
-      setSettingsError(String(error));
-    } finally {
-      setIsAutomationBusy(false);
-    }
-  };
-
-  const handleAddSentinelRule = async (
-    triggerType: SentinelTriggerType,
-    triggerConfig: string,
-    targetShortcut: string,
-  ) => {
-    setIsAutomationBusy(true);
-    setSettingsError(null);
-    try {
-      await invoke("add_sentinel_rule", {
-        triggerType,
-        triggerConfig,
-        targetShortcut,
-      });
-      await refreshAutomation();
-      addSystemMessage(
-        `[AUTOMATION UPDATED]\nAdded ${triggerType} rule for ${targetShortcut.trim()}.`,
-      );
-    } catch (error) {
-      setSettingsError(String(error));
-    } finally {
-      setIsAutomationBusy(false);
-    }
-  };
-
-  const handleToggleSentinelRule = async (ruleId: string, isActive: boolean) => {
-    setIsAutomationBusy(true);
-    setSettingsError(null);
-    try {
-      await invoke("toggle_sentinel_rule", { ruleId, isActive });
-      await refreshAutomation();
-    } catch (error) {
-      setSettingsError(String(error));
-    } finally {
-      setIsAutomationBusy(false);
-    }
-  };
-
-  const handleDeleteSentinelRule = async (ruleId: string) => {
-    setIsAutomationBusy(true);
-    setSettingsError(null);
-    try {
-      await invoke("delete_sentinel_rule", { ruleId });
-      await refreshAutomation();
-    } catch (error) {
-      setSettingsError(String(error));
-    } finally {
-      setIsAutomationBusy(false);
     }
   };
 
@@ -616,9 +487,8 @@ export default function AppShell() {
     setInput("");
     setProcessing(true);
     setStatusText("● RUST HYPERVISOR ACTIVE");
-    clearTelemetry();
     addUserMessage(task);
-    const requestStreamId = createTelemetryId("request");
+    const requestStreamId = makeId("request");
     let resolvedSessionId = selectedSessionId;
 
     try {
@@ -728,7 +598,6 @@ export default function AppShell() {
     try {
       await invoke("nuke_database");
       clearConversation();
-      clearTelemetry();
       useConsentStore.getState().clearQueue();
       setKnowledgeEntries([]);
       setMemoryOverview(null);
@@ -806,29 +675,21 @@ export default function AppShell() {
         onToggleAgents={handleToggleAgents}
       />
       </div>
-      <TelemetryDrawer compactLayout={isCompactLayout} />
       <ConsentModal />
       <SettingsModal
         isOpen={isSettingsOpen}
         settings={settings}
         isSaving={isSavingSettings}
-        isAutomationBusy={isAutomationBusy}
+        isAutomationBusy={false}
         errorMessage={settingsError}
-        shortcuts={shortcuts}
-        sentinelRules={sentinelRules}
         onClose={() => {
-          if (isSavingSettings || isAutomationBusy) {
+          if (isSavingSettings) {
             return;
           }
           setIsSettingsOpen(false);
           setSettingsError(null);
         }}
         onSave={handleSaveSettings}
-        onSaveShortcut={handleSaveShortcut}
-        onDeleteShortcut={handleDeleteShortcut}
-        onAddSentinelRule={handleAddSentinelRule}
-        onToggleSentinelRule={handleToggleSentinelRule}
-        onDeleteSentinelRule={handleDeleteSentinelRule}
       />
     </div>
   );

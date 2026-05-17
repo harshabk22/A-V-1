@@ -33,6 +33,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "ageex_wire"
+version = "0.1.0"
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2316,6 +2320,7 @@ name = "moat_core"
 version = "0.1.0"
 dependencies = [
  "active-win-pos-rs",
+ "ageex_wire",
  "anyhow",
  "arboard",
  "async-trait",

@@ -4,11 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node ./scripts/tauri-wrapper.mjs dev",
+    "vite": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "node ./scripts/tauri-wrapper.mjs",
-    "tauri:voice": "tauri dev --features whisper"
+  "tauri:build": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 pub const KEYCHAIN_SERVICE_NAME: &str = "com.moatageex.vault";
 pub const NVIDIA_KEY_ACCOUNT: &str = "nvidia_api_key";
+pub const DEEPSEEK_KEY_ACCOUNT: &str = "deepseek_api_key";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -25,6 +26,8 @@ pub struct UserFrontmatter {
     pub worker_model: Option<String>,
     #[serde(default)]
     pub nvidia_api_key: Option<String>,
+    #[serde(default)]
+    pub deepseek_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +41,7 @@ pub struct UserDocument {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsState {
     pub has_nvidia: bool,
+    pub has_deepseek: bool,
     pub chat_model: Option<String>,
     pub planner_model: Option<String>,
     pub worker_model: Option<String>,
@@ -54,16 +58,30 @@ pub struct SettingsUpdate {
     pub worker_model: Option<String>,
     #[serde(default)]
     pub nvidia_api_key: Option<String>,
+    #[serde(default)]
+    pub deepseek_api_key: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderProfiles {
     #[serde(default)]
     pub nvidia_profiles: Vec<NvidiaProfileMeta>,
+    #[serde(default)]
+    pub deepseek_profiles: Vec<DeepSeekProfileMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NvidiaProfileMeta {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub model_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeepSeekProfileMeta {
     pub id: String,
     pub label: String,
     #[serde(default)]
@@ -124,11 +142,25 @@ pub fn nvidia_account_name(profile_id: &str) -> String {
     }
 }
 
+pub fn deepseek_account_name(profile_id: &str) -> String {
+    let normalized = profile_id.trim();
+    if normalized.is_empty() || normalized == "default" {
+        DEEPSEEK_KEY_ACCOUNT.to_string()
+    } else {
+        format!("{DEEPSEEK_KEY_ACCOUNT}::{normalized}")
+    }
+}
+
 pub fn default_provider_profiles() -> ProviderProfiles {
     ProviderProfiles {
         nvidia_profiles: vec![NvidiaProfileMeta {
             id: "default".to_string(),
             label: "Default NVIDIA".to_string(),
+            model_hint: String::new(),
+        }],
+        deepseek_profiles: vec![DeepSeekProfileMeta {
+            id: "default".to_string(),
+            label: "Default DeepSeek".to_string(),
             model_hint: String::new(),
         }],
     }
@@ -142,7 +174,16 @@ fn normalize_provider_profiles(mut profiles: ProviderProfiles) -> ProviderProfil
         !id.is_empty() && !label.is_empty() && seen.insert(id.to_string())
     });
     if profiles.nvidia_profiles.is_empty() {
-        profiles = default_provider_profiles();
+        profiles.nvidia_profiles = default_provider_profiles().nvidia_profiles;
+    }
+    seen.clear();
+    profiles.deepseek_profiles.retain(|profile| {
+        let id = profile.id.trim();
+        let label = profile.label.trim();
+        !id.is_empty() && !label.is_empty() && seen.insert(id.to_string())
+    });
+    if profiles.deepseek_profiles.is_empty() {
+        profiles.deepseek_profiles = default_provider_profiles().deepseek_profiles;
     }
     profiles
 }
@@ -182,6 +223,7 @@ pub fn default_user_document() -> UserDocument {
         planner_model: None,
         worker_model: None,
         nvidia_api_key: None,
+        deepseek_api_key: None,
     };
     let raw_markdown = render_user_document(&frontmatter, &body).unwrap_or_else(|_| {
         "---\nname: \"User\"\ncore_preferences: \"\"\nchat_model: null\nplanner_model: null\nworker_model: null\nnvidia_api_key: null\n---\n[User can write freeform notes here]\n".to_string()

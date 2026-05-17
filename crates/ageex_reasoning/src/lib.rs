@@ -1,4 +1,4 @@
 pub mod engine;
 pub mod imports;
 
-pub use engine::{AirgapEnvelope, ReasoningEngine, ReasoningInstance, StepOutcome, StoreData};
+pub use engine::{AirgapBundle, AirgapEnvelope, ReasoningEngine, ReasoningInstance, StepOutcome, StoreData, ViolationRecord};

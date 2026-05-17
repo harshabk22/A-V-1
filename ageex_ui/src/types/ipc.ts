@@ -76,7 +76,7 @@ export interface MemoryOverview {
 export type SessionSource =
   | "desktop_ui"
   | "command_bar"
-  | "voice"
+
   | "automation"
   | "webchat"
   | "cli"
@@ -226,30 +226,9 @@ export interface WorkerContextResponse {
   answer: string;
 }
 
-export interface ShortcutRecord {
-  triggerName: string;
-  workflowJson: string;
-  createdAt: string;
-}
-
-export type SentinelTriggerType = "CRON" | "FILE_WATCH";
-
-export interface SentinelRuleRecord {
-  ruleId: string;
-  triggerType: SentinelTriggerType;
-  triggerConfig: string;
-  targetShortcut: string;
-  isActive: boolean;
-}
-
-export type KernelEvent =
-  | AskChoiceTelemetry
-  | StreamMessageTelemetry
-  | BackgroundErrorEvent
-  | WorkerContextRequestEvent;
-
 export interface SettingsState {
   hasNvidia: boolean;
+  hasDeepseek: boolean;
   chatModel?: string;
   plannerModel?: string;
   workerModel?: string;
@@ -260,12 +239,8 @@ export interface SettingsUpdate {
   plannerModel?: string;
   workerModel?: string;
   nvidiaApiKey?: string;
-}
-
-export interface VoiceStatus {
-  voiceEnabled: boolean;
-  reason?: string | null;
-  modelPath: string;
+  deepseekApiKey?: string;
+  provider?: string;
 }
 
 export function parseAskChoiceTelemetry(payload: string): AskChoiceTelemetry | null {
@@ -353,6 +328,14 @@ export function parseWorkerContextRequestTelemetry(
 export const REASONING_ENVELOPE_EVENT = "reasoning-airgap-envelope";
 export const REASONING_VIOLATION_EVENT = "reasoning-security-violation";
 export const REASONING_YIELD_EVENT = "reasoning-agent-yield";
+export const REASONING_RESPONSE_EVENT = "reasoning-airgap-response";
+
+export interface AirgapResponseEvent {
+  agentId: string;
+  seq: number;
+  op: string;
+  isSuccess: boolean;
+}
 
 export type AgentState = "idle" | "running" | "yielded" | "trapped";
 

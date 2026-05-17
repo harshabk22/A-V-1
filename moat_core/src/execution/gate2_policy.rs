@@ -20,7 +20,7 @@ impl Default for ExecutionPolicy {
         let home = dirs::home_dir().unwrap_or_default();
         let workspace = home.join(".moatageex").join("workspace");
         Self {
-            allow_network: false,
+            allow_network: true,
             allow_process_spawn: true,
             max_file_write_size_mb: 10,
             blocked_commands: vec![

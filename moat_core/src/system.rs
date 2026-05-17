@@ -221,6 +221,12 @@ mod tests {
             Ok(())
         }
 
+        fn set_default_provider(&self, _provider: &str) {}
+
+        fn get_default_provider(&self) -> String {
+            "nvidia".to_string()
+        }
+
         fn provider_health<'a>(
             &'a self,
             _api_provider: &'a str,
@@ -1307,7 +1313,7 @@ impl MoatSystem {
         let prompt = Self::build_session_summary_prompt(existing_summary.as_deref(), &hot_messages);
         let provider = self
             .provider_factory
-            .provider_for("nvidia")
+            .provider_for(&self.provider_factory.get_default_provider())
             .unwrap_or_else(|_| self.orchestrator.planner.provider.clone());
         let summary_result = tokio::time::timeout(
             SESSION_COMPACTION_TIMEOUT,
@@ -1813,6 +1819,13 @@ impl MoatSystem {
                 .has_stored_key(&format!("nvidia:{}", profile.id))?;
             has_any_nvidia_key |= has_key;
         }
+        let mut has_any_deepseek_key = false;
+        for profile in provider_profiles.deepseek_profiles {
+            let has_key = self
+                .provider_factory
+                .has_stored_key(&format!("deepseek:{}", profile.id))?;
+            has_any_deepseek_key |= has_key;
+        }
         let has_frontmatter_nvidia_key = user_doc
             .frontmatter
             .nvidia_api_key
@@ -1823,9 +1836,20 @@ impl MoatSystem {
             .ok()
             .map(|value| value.trim().to_string())
             .is_some_and(|value| !value.is_empty());
+        let has_frontmatter_deepseek_key = user_doc
+            .frontmatter
+            .deepseek_api_key
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+        let has_env_deepseek_key = std::env::var("DEEPSEEK_API_KEY")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .is_some_and(|value| !value.is_empty());
 
         Ok(SettingsState {
             has_nvidia: has_any_nvidia_key || has_frontmatter_nvidia_key || has_env_nvidia_key,
+            has_deepseek: has_any_deepseek_key || has_frontmatter_deepseek_key || has_env_deepseek_key,
             chat_model: user_doc.frontmatter.chat_model,
             planner_model: user_doc.frontmatter.planner_model,
             worker_model: user_doc.frontmatter.worker_model,
@@ -1863,6 +1887,16 @@ impl MoatSystem {
         } else {
             existing_user_doc.frontmatter.nvidia_api_key.clone()
         };
+        let normalized_deepseek_key = if let Some(key) = update.deepseek_api_key.as_deref() {
+            let trimmed = key.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        } else {
+            existing_user_doc.frontmatter.deepseek_api_key.clone()
+        };
         config::save_user_frontmatter(
             root.join("USER.md"),
             UserFrontmatter {
@@ -1872,6 +1906,7 @@ impl MoatSystem {
                 planner_model: normalized_planner_model.clone(),
                 worker_model: normalized_worker_model.clone(),
                 nvidia_api_key: normalized_nvidia_key.clone(),
+                deepseek_api_key: normalized_deepseek_key.clone(),
             },
         )
         .await?;
@@ -1882,6 +1917,22 @@ impl MoatSystem {
                 self.provider_factory.set_provider_key("nvidia", trimmed)?;
             }
             _ => {}
+        }
+
+        match update.deepseek_api_key.as_deref().map(str::trim) {
+            Some("") => self.provider_factory.remove_provider_key("deepseek")?,
+            Some(trimmed) if !trimmed.is_empty() => {
+                self.provider_factory.set_provider_key("deepseek", trimmed)?;
+                self.provider_factory.set_default_provider("deepseek");
+            }
+            _ => {}
+        }
+
+        if let Some(ref provider_name) = update.provider {
+            let normalized = provider_name.trim().to_ascii_lowercase();
+            if normalized == "nvidia" || normalized == "deepseek" {
+                self.provider_factory.set_default_provider(&normalized);
+            }
         }
 
         self.provider_factory.invalidate_cache();

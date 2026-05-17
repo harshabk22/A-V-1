@@ -1,0 +1,13 @@
+[package]
+name = "example_agent"
+version = "0.1.0"
+edition = "2021"
+description = "Example WASM agent — reads a file through the airgap/DEL path"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ageex_agent_sdk = { path = "../sdk" }
+ageex_wire = { path = "../../../crates/ageex_wire" }
+wee_alloc = "0.4"

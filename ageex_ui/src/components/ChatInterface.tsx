@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useChatStore } from "../stores/chatStore";
@@ -9,18 +7,7 @@ import {
   type GatewaySessionContext,
   type MemoryOverview,
   type GatewaySessionRecord,
-  KERNEL_READY_EVENT_NAME,
-  type VoiceStatus,
 } from "../types/ipc";
-
-const VOICE_PREFIX_USER = "[USER VOICE]: ";
-const VOICE_PREFIX_AGENT = "[AGENT VOICE]: ";
-const TRANSCRIPT_CLEAR_MS = 4000;
-const DEFAULT_VOICE_STATUS: VoiceStatus = {
-  voiceEnabled: false,
-  reason: "Checking voice subsystem...",
-  modelPath: "",
-};
 
 function MessageBody({
   text,
@@ -142,28 +129,6 @@ interface ChatInterfaceProps {
   onToggleAgents: () => void;
 }
 
-/** Inline SVG microphone icon for the voice toggle button. */
-function MicIcon({ active }: { active: boolean }) {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke={active ? "#ff5c5c" : "#b0c4de"}
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      style={{ display: "block" }}
-    >
-      <rect x="9" y="2" width="6" height="12" rx="3" />
-      <path d="M5 10a7 7 0 0 0 14 0" />
-      <line x1="12" y1="19" x2="12" y2="22" />
-      <line x1="8" y1="22" x2="16" y2="22" />
-    </svg>
-  );
-}
-
 export default function ChatInterface({
   compactLayout,
   onSubmit,
@@ -189,148 +154,8 @@ export default function ChatInterface({
   const showMemory = useChatStore((state) => state.showMemory);
   const knowledgeEntries = useChatStore((state) => state.knowledgeEntries);
   const setInput = useChatStore((state) => state.setInput);
-  const addSystemMessage = useChatStore((state) => state.addSystemMessage);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
-
-  // ── Voice session state ──
-  const [isVoiceActive, setIsVoiceActive] = useState(false);
-  const [isVoicePending, setIsVoicePending] = useState(false);
-  const [activeTranscript, setActiveTranscript] = useState("");
-  const [transcriptRole, setTranscriptRole] = useState<"user" | "agent">("user");
-  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>(DEFAULT_VOICE_STATUS);
-  const transcriptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    let mounted = true;
-
-    const refreshVoiceStatus = async () => {
-      try {
-        const status = await invoke<VoiceStatus>("check_voice_status");
-        if (!mounted) {
-          return;
-        }
-        setVoiceStatus(status);
-        if (!status.voiceEnabled) {
-          setIsVoiceActive(false);
-        }
-      } catch (err) {
-        if (!mounted) {
-          return;
-        }
-        setVoiceStatus({
-          voiceEnabled: false,
-          reason: `Voice status unavailable: ${String(err)}`,
-          modelPath: "",
-        });
-        setIsVoiceActive(false);
-      }
-    };
-
-    void refreshVoiceStatus();
-
-    const unlistenPromise = listen(KERNEL_READY_EVENT_NAME, () => {
-      void refreshVoiceStatus();
-    });
-
-    return () => {
-      mounted = false;
-      void unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, []);
-
-  // ── Telemetry listener for voice transcripts ──
-  useEffect(() => {
-    let mounted = true;
-    const unlistenPromise = listen<string>("live-telemetry", (event) => {
-      if (!mounted) return;
-      const payload = String(event.payload);
-
-      if (payload.startsWith("[VOICE ERROR]")) {
-        const text = payload.slice("[VOICE ERROR]".length).trim();
-        setIsVoiceActive(false);
-        setActiveTranscript("");
-        addSystemMessage(`[VOICE ERROR]\n${text}`);
-        return;
-      }
-
-      if (payload.startsWith("[VOICE] Voice session stopped.")) {
-        setIsVoiceActive(false);
-        setActiveTranscript("");
-        if (transcriptTimerRef.current) {
-          clearTimeout(transcriptTimerRef.current);
-          transcriptTimerRef.current = null;
-        }
-        return;
-      }
-
-      let text = "";
-      let role: "user" | "agent" = "user";
-
-      if (payload.startsWith(VOICE_PREFIX_USER)) {
-        text = payload.slice(VOICE_PREFIX_USER.length).trim();
-        role = "user";
-      } else if (payload.startsWith(VOICE_PREFIX_AGENT)) {
-        text = payload.slice(VOICE_PREFIX_AGENT.length).trim();
-        role = "agent";
-      } else {
-        return; // Not a voice telemetry event
-      }
-
-      if (!text) return;
-
-      setActiveTranscript(text);
-      setTranscriptRole(role);
-
-      // Auto-clear after TRANSCRIPT_CLEAR_MS
-      if (transcriptTimerRef.current) {
-        clearTimeout(transcriptTimerRef.current);
-      }
-      transcriptTimerRef.current = setTimeout(() => {
-        if (mounted) {
-          setActiveTranscript("");
-        }
-      }, TRANSCRIPT_CLEAR_MS);
-    });
-
-    return () => {
-      mounted = false;
-      if (transcriptTimerRef.current) {
-        clearTimeout(transcriptTimerRef.current);
-      }
-      void unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [addSystemMessage]);
-
-  const handleToggleVoice = useCallback(async () => {
-    if (isVoicePending) {
-      return;
-    }
-    setIsVoicePending(true);
-    try {
-      if (!isVoiceActive) {
-        await invoke("start_voice_session");
-        setIsVoiceActive(true);
-        addSystemMessage("[VOICE]\nVoice session started.");
-      } else {
-        await invoke("stop_voice_session");
-        setIsVoiceActive(false);
-        setActiveTranscript("");
-        if (transcriptTimerRef.current) {
-          clearTimeout(transcriptTimerRef.current);
-          transcriptTimerRef.current = null;
-        }
-        addSystemMessage("[VOICE]\nVoice session stopped.");
-      }
-    } catch (err) {
-      console.error("[Voice]", err);
-      // If starting failed, make sure state is consistent
-      setIsVoiceActive(false);
-      addSystemMessage(`[VOICE ERROR]\n${String(err)}`);
-    } finally {
-      setIsVoicePending(false);
-    }
-  }, [addSystemMessage, isVoiceActive, isVoicePending]);
 
   useEffect(() => {
     const pane = messagesScrollRef.current;
@@ -370,18 +195,6 @@ export default function ChatInterface({
         background: "linear-gradient(180deg, #0f1014 0%, #0a0c10 100%)",
       }}
     >
-      {/* ── Pulsing keyframe for hot mic (injected once) ── */}
-      <style>{`
-        @keyframes voicePulse {
-          0%, 100% { box-shadow: 0 0 0 0 rgba(255, 72, 72, 0.55); }
-          50% { box-shadow: 0 0 0 8px rgba(255, 72, 72, 0); }
-        }
-        @keyframes transcriptSlideIn {
-          from { opacity: 0; transform: translateY(6px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
-
       <header
         style={{
           display: "flex",
@@ -488,17 +301,12 @@ export default function ChatInterface({
           </button>
           <span
             style={{
-              color: statusText.includes("WAITING")
-                ? "#ffbe5c"
-                : statusText.includes("ACTIVE")
-                ? "#7ee0a1"
-                  : "#8b98af",
+              color: "#8b98af",
               fontSize: "0.82rem",
               fontWeight: 700,
-              whiteSpace: compactLayout ? "normal" : "nowrap",
             }}
           >
-            {statusText}
+            ●
           </span>
         </div>
       </header>
@@ -644,7 +452,44 @@ export default function ChatInterface({
             )}
           </div>
 
-          {/* ── Input bar with voice controls ── */}
+          {/* ── Status bar ── */}
+          <div
+            style={{
+              borderTop: "1px solid #1c2432",
+              background: "#0a101a",
+              padding: "5px 16px",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              minHeight: "28px",
+              flexShrink: 0,
+            }}
+          >
+            <span
+              style={{
+                width: "6px",
+                height: "6px",
+                borderRadius: "999px",
+                background: isProcessing ? "#7ee0a1" : "#8b98af",
+                flexShrink: 0,
+                transition: "background 0.3s ease",
+              }}
+            />
+            <span
+              style={{
+                color: "#6f8099",
+                fontSize: "0.72rem",
+                fontFamily: "monospace",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {isProcessing ? statusText : "○ Ready"}
+            </span>
+          </div>
+
+          {/* ── Input bar ── */}
           <div
             style={{
               borderTop: "1px solid #1c2432",
@@ -653,53 +498,6 @@ export default function ChatInterface({
               position: "relative",
             }}
           >
-            {/* ── Transcript overlay ── */}
-            {isVoiceActive && activeTranscript && (
-              <div
-                style={{
-                  position: "absolute",
-                  bottom: "100%",
-                  left: compactLayout ? "16px" : "22px",
-                  right: compactLayout ? "16px" : "22px",
-                  marginBottom: "8px",
-                  padding: "10px 16px",
-                  borderRadius: "14px",
-                  background: "linear-gradient(135deg, rgba(20, 28, 44, 0.96), rgba(14, 20, 32, 0.96))",
-                  border: transcriptRole === "user"
-                    ? "1px solid rgba(90, 160, 255, 0.35)"
-                    : "1px solid rgba(120, 230, 160, 0.35)",
-                  backdropFilter: "blur(12px)",
-                  boxShadow: "0 -4px 24px rgba(0, 0, 0, 0.3)",
-                  animation: "transcriptSlideIn 0.2s ease-out",
-                  zIndex: 10,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: "0.68rem",
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    color: transcriptRole === "user" ? "#7ab8ff" : "#7ee0a1",
-                    marginBottom: "4px",
-                    letterSpacing: "0.04em",
-                  }}
-                >
-                  {transcriptRole === "user" ? "🎙 You" : "🔊 Agent"}
-                </div>
-                <div
-                  style={{
-                    color: "#e8edf5",
-                    fontSize: "0.92rem",
-                    lineHeight: 1.4,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  {activeTranscript}
-                </div>
-              </div>
-            )}
-
             <div
               style={{
                 display: "flex",
@@ -721,9 +519,7 @@ export default function ChatInterface({
                 placeholder={
                   isBooting
                     ? "Booting MoatAgeex Kernel..."
-                    : isVoiceActive
-                      ? "Voice session active — speak or type..."
-                      : "Describe the next task in plain language"
+                    : "Describe the next task in plain language"
                 }
                 style={{
                   flex: 1,
@@ -731,9 +527,7 @@ export default function ChatInterface({
                   minHeight: compactLayout ? "92px" : "76px",
                   resize: "vertical",
                   borderRadius: "16px",
-                  border: isVoiceActive
-                    ? "1px solid rgba(255, 92, 92, 0.4)"
-                    : "1px solid #263144",
+                  border: "1px solid #263144",
                   background: "#0d121a",
                   color: "#f4f7fb",
                   padding: "14px 16px",
@@ -748,47 +542,6 @@ export default function ChatInterface({
                   width: compactLayout ? "100%" : undefined,
                 }}
               >
-                {/* ── Microphone toggle button ── */}
-                <button
-                  id="voice-toggle-btn"
-                  type="button"
-                  onClick={() => void handleToggleVoice()}
-                  disabled={isBooting || isVoicePending || !voiceStatus.voiceEnabled}
-                  title={
-                    isVoicePending
-                      ? "Voice session is updating..."
-                      : !voiceStatus.voiceEnabled
-                        ? voiceStatus.reason ?? "Whisper model missing. Check terminal."
-                      : isVoiceActive
-                        ? "Stop voice session"
-                        : "Start voice session"
-                  }
-                  style={{
-                    border: isVoiceActive
-                      ? "1px solid rgba(255, 72, 72, 0.6)"
-                      : "1px solid #2f3b4f",
-                    background: isVoiceActive
-                      ? "rgba(80, 18, 18, 0.95)"
-                      : "#101722",
-                    borderRadius: "16px",
-                    padding: "14px",
-                    cursor:
-                      isBooting || isVoicePending || !voiceStatus.voiceEnabled
-                        ? "not-allowed"
-                        : "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    minWidth: "48px",
-                    transition: "all 0.2s ease",
-                    animation: isVoiceActive
-                      ? "voicePulse 1.8s ease-in-out infinite"
-                      : "none",
-                    opacity: !voiceStatus.voiceEnabled ? 0.55 : 1,
-                  }}
-                >
-                  <MicIcon active={isVoiceActive} />
-                </button>
                 {/* ── Send button ── */}
                 <button
                   type="button"
@@ -813,17 +566,6 @@ export default function ChatInterface({
                 </button>
               </div>
             </div>
-            {!voiceStatus.voiceEnabled && (
-              <div
-                style={{
-                  marginTop: "10px",
-                  color: "#8b98af",
-                  fontSize: "0.8rem",
-                }}
-              >
-                Voice unavailable: {voiceStatus.reason ?? "Whisper model missing. Check terminal."}
-              </div>
-            )}
           </div>
         </div>
 

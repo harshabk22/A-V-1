@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useReasoningStore, type AuditEntry } from "../stores/reasoningStore";
 
 const AGENT_STATE_COLOR: Record<string, string> = {
@@ -23,7 +24,9 @@ function AuditLine({ entry }: { entry: AuditEntry }) {
         ? "#ffbe5c"
         : entry.kind === "envelope"
           ? "#8fd8b5"
-          : "#9dc0ff";
+          : entry.kind === "step"
+            ? "#9dc0ff"
+            : "#7c8aa0";
 
   return (
     <div
@@ -51,6 +54,10 @@ export default function ReasoningPanel() {
   const auditLog = useReasoningStore((s) => s.auditLog);
   const auditScrollRef = useRef<HTMLDivElement>(null);
 
+  const [stepFuel, setStepFuel] = useState("1000000");
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     const el = auditScrollRef.current;
     if (el) {
@@ -58,11 +65,92 @@ export default function ReasoningPanel() {
     }
   }, [auditLog.length]);
 
+  const handleFileUpload = useCallback(async (file: File) => {
+    setUploadStatus(`Reading ${file.name}...`);
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const wasmBase64 = btoa(binary);
+      const agentId = file.name.replace(/\.wasm$/i, "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32) || "agent";
+
+      setUploadStatus(`Instantiating ${agentId}...`);
+      await invoke("instantiate_agent", { wasmBytesBase64: wasmBase64, agentLabel: agentId });
+      setUploadStatus(`Agent ${agentId} instantiated.`);
+      setTimeout(() => setUploadStatus(null), 3000);
+
+      const agentIds = await invoke<string[]>("list_agents");
+      agentIds.forEach((id) => {
+        useReasoningStore.getState().upsertAgent({
+          agentId: id,
+          state: "idle",
+          fuelRemaining: 0,
+          fuelBudget: 0,
+          envelopesSent: 0,
+          yieldMessage: "",
+        });
+      });
+    } catch (e) {
+      setUploadStatus(`Error: ${String(e)}`);
+      setTimeout(() => setUploadStatus(null), 5000);
+    }
+  }, []);
+
+  const handleStep = useCallback(async (agentKey: string) => {
+    try {
+      useReasoningStore.getState().upsertAgent({
+        agentId: agentKey,
+        state: "running",
+        fuelRemaining: 0,
+        fuelBudget: 0,
+        envelopesSent: 0,
+        yieldMessage: "",
+      });
+      const fuel = parseInt(stepFuel, 10) || 1000000;
+      const outcome = await invoke<{
+        agentYielded: boolean;
+        yieldMessage: string;
+        totalRequestsSent: number;
+        fuelUsed: number;
+      }>("step_agent", { agentKey, fuelBudget: fuel });
+
+      useReasoningStore.getState().upsertAgent({
+        agentId: agentKey,
+        state: outcome.agentYielded ? "yielded" : "idle",
+        fuelRemaining: Math.max(0, fuel - outcome.fuelUsed),
+        fuelBudget: fuel,
+        envelopesSent: outcome.totalRequestsSent,
+        yieldMessage: outcome.yieldMessage,
+      });
+    } catch (e) {
+      useReasoningStore.getState().upsertAgent({
+        agentId: agentKey,
+        state: "trapped",
+        fuelRemaining: 0,
+        fuelBudget: 0,
+        envelopesSent: 0,
+        yieldMessage: String(e),
+      });
+    }
+  }, [stepFuel]);
+
+  const handleDestroy = useCallback(async (agentKey: string) => {
+    try {
+      await invoke("destroy_agent", { agentKey });
+      useReasoningStore.getState().removeAgent(agentKey);
+    } catch (e) {
+      console.error("destroy_agent failed:", e);
+    }
+  }, []);
+
   return (
     <aside
       style={{
-        width: "320px",
-        minWidth: "320px",
+        width: "360px",
+        minWidth: "360px",
         borderLeft: "1px solid #1c2432",
         background: "#0d1117",
         display: "flex",
@@ -105,6 +193,105 @@ export default function ReasoningPanel() {
           overscrollBehavior: "contain",
         }}
       >
+        {/* Load WASM Section */}
+        <div
+          style={{
+            border: "1px solid #263144",
+            borderRadius: "14px",
+            background: "#101722",
+            padding: "12px",
+          }}
+        >
+          <div
+            style={{
+              color: "#d9e8ff",
+              fontSize: "0.82rem",
+              fontWeight: 700,
+              marginBottom: "8px",
+            }}
+          >
+            Load WASM
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".wasm"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFileUpload(file);
+              e.target.value = "";
+            }}
+            style={{ display: "none" }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              borderRadius: "8px",
+              border: "1px dashed #3d5278",
+              background: "#0f1926",
+              color: "#8fd8b5",
+              cursor: "pointer",
+              fontFamily: "monospace",
+              fontSize: "0.78rem",
+              fontWeight: 600,
+            }}
+          >
+            + Upload .wasm
+          </button>
+          {uploadStatus && (
+            <div
+              style={{
+                marginTop: "8px",
+                color: uploadStatus.startsWith("Error") ? "#ff6b6b" : "#8fd8b5",
+                fontSize: "0.72rem",
+                fontFamily: "monospace",
+              }}
+            >
+              {uploadStatus}
+            </div>
+          )}
+        </div>
+
+        {/* Fuel Budget */}
+        <div
+          style={{
+            border: "1px solid #263144",
+            borderRadius: "14px",
+            background: "#101722",
+            padding: "12px",
+          }}
+        >
+          <div
+            style={{
+              color: "#d9e8ff",
+              fontSize: "0.82rem",
+              fontWeight: 700,
+              marginBottom: "6px",
+            }}
+          >
+            Step Fuel Budget
+          </div>
+          <input
+            type="number"
+            value={stepFuel}
+            onChange={(e) => setStepFuel(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "6px 10px",
+              borderRadius: "8px",
+              border: "1px solid #263144",
+              background: "#0d141d",
+              color: "#d9e8ff",
+              fontFamily: "monospace",
+              fontSize: "0.8rem",
+              boxSizing: "border-box",
+            }}
+            placeholder="1000000"
+          />
+        </div>
+
         {/* Agent Roster */}
         <div
           style={{
@@ -161,8 +348,8 @@ export default function ReasoningPanel() {
                         fontWeight: 700,
                       }}
                     >
-                      {agent.agentId.length > 16
-                        ? `${agent.agentId.slice(0, 16)}...`
+                      {agent.agentId.length > 20
+                        ? `${agent.agentId.slice(0, 20)}...`
                         : agent.agentId}
                     </span>
                     <span
@@ -237,27 +424,71 @@ export default function ReasoningPanel() {
                   <div
                     style={{
                       display: "flex",
-                      gap: "16px",
-                      color: "#6f8099",
-                      fontSize: "0.68rem",
-                      fontFamily: "monospace",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "6px",
                     }}
                   >
-                    <span>envelopes: {agent.envelopesSent}</span>
-                    {agent.yieldMessage && (
-                      <span
+                    <span
+                      style={{
+                        color: "#6f8099",
+                        fontSize: "0.68rem",
+                        fontFamily: "monospace",
+                      }}
+                    >
+                      envelopes: {agent.envelopesSent}
+                    </span>
+                    <div style={{ display: "flex", gap: "4px" }}>
+                      <button
+                        onClick={() => handleStep(agent.agentId)}
                         style={{
-                          color: "#ffbe5c",
-                          maxWidth: "120px",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
+                          padding: "3px 8px",
+                          borderRadius: "6px",
+                          border: "1px solid #2d5a3d",
+                          background: "#152915",
+                          color: "#7ee0a1",
+                          cursor: "pointer",
+                          fontSize: "0.66rem",
+                          fontWeight: 700,
+                          fontFamily: "monospace",
                         }}
                       >
-                        msg: {agent.yieldMessage}
-                      </span>
-                    )}
+                        STEP
+                      </button>
+                      <button
+                        onClick={() => handleDestroy(agent.agentId)}
+                        style={{
+                          padding: "3px 8px",
+                          borderRadius: "6px",
+                          border: "1px solid #5a2d2d",
+                          background: "#291515",
+                          color: "#ff6b6b",
+                          cursor: "pointer",
+                          fontSize: "0.66rem",
+                          fontWeight: 700,
+                          fontFamily: "monospace",
+                        }}
+                      >
+                        DESTROY
+                      </button>
+                    </div>
                   </div>
+
+                  {agent.yieldMessage && (
+                    <div
+                      style={{
+                        marginTop: "6px",
+                        color: "#ffbe5c",
+                        fontSize: "0.68rem",
+                        fontFamily: "monospace",
+                        wordBreak: "break-all",
+                        maxHeight: "40px",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {agent.yieldMessage}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

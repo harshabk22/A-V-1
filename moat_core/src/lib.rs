@@ -88,6 +88,7 @@ pub mod llm;
 pub mod tools;
 pub mod profile;
 pub mod execution;
+pub mod airgap;
 
 use agent::{Agent, Agent1, Agent2, AgentResponse};
 use router::{Router, RouteTarget};
