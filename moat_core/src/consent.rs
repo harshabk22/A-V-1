@@ -311,10 +311,15 @@ impl ConsentBridge {
 
         (self.emit)(request);
 
-        match rx.await {
-            Ok(decision) => decision,
-            Err(_) => {
+        match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
+            Ok(Ok(decision)) => decision,
+            Ok(Err(_)) => {
                 eprintln!("[ConsentBridge] receiver dropped for request {request_id} — denying");
+                ConsentDecision::Deny
+            }
+            Err(_elapsed) => {
+                eprintln!("[ConsentBridge] consent timed out for request {request_id} — auto-denying");
+                let _ = self.pending.lock().map(|mut map| map.remove(&request_id));
                 ConsentDecision::Deny
             }
         }

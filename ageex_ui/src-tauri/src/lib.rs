@@ -28,7 +28,7 @@ use reasoning_bridge::{ReasoningBridge, StepOutcomePayload};
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 use uuid::Uuid;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
@@ -169,12 +169,10 @@ fn emit_background_fault(app: &tauri::AppHandle, severity: &str, subsystem: &str
 pub struct AppState {
     kernel: Arc<AsyncMutex<Option<Arc<MoatSystem>>>>,
     consent_bridge: Arc<ConsentBridge>,
-    /// Scraped UI elements from the last hotkey press, used by os:click and os:type_text.
     ui_element_map: Arc<std::sync::Mutex<Vec<ui_scraper::ScrapedElement>>>,
-    /// Gateway transport bind info for socket-based RPC from the desktop client.
     gateway_info: Arc<AsyncMutex<Option<GatewayServerInfo>>>,
-    /// WASM reasoning engine and agent instances.
     reasoning: Arc<AsyncMutex<ReasoningBridge>>,
+    cancel_tx: Arc<watch::Sender<bool>>,
 }
 
 fn should_attach_active_ui_tree(task: &str) -> bool {
@@ -597,6 +595,17 @@ fn spawn_gateway_event_stream(
 }
 
 #[tauri::command]
+async fn cancel_execution(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let _ = state.cancel_tx.send(true);
+    if let Some(kernel) = state.kernel.lock().await.as_ref() {
+        kernel.cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn execute_task(
     task: String,
     client_request_id: Option<String>,
@@ -675,19 +684,33 @@ async fn execute_task(
         (SessionSource::WebChat, Some("tauri_webchat:main".to_string()))
     };
 
-    match call_gateway_rpc(
-        &state,
-        Some(&app),
-        GatewayRpcRequest::ExecutePrompt {
-            source,
-            channel,
-            text: enriched_task,
-            root_node_id: 0,
+    let mut cancel_rx = state.cancel_tx.subscribe();
+    let _ = state.cancel_tx.send(false);
+    cancel_rx.borrow_and_update();
+
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(120),
+        async {
+            tokio::select! {
+                rpc = call_gateway_rpc(
+                    &state,
+                    Some(&app),
+                    GatewayRpcRequest::ExecutePrompt {
+                        source,
+                        channel,
+                        text: enriched_task,
+                        root_node_id: 0,
+                    },
+                    client_request_id,
+                ) => rpc,
+                _ = cancel_rx.changed() => Err("Cancelled by user".to_string()),
+            }
         },
-        client_request_id,
     )
     .await
-    {
+    .unwrap_or_else(|_| Err("Execution timed out after 120 seconds".to_string()));
+
+    match result {
         Ok(response) => {
             let output_log = format_gateway_execution_output(response)?;
             Ok(output_log)
@@ -1315,12 +1338,14 @@ pub fn run() {
                     }
                 });
             }
+            let (cancel_tx, _cancel_rx) = watch::channel(false);
             app.manage(AppState {
                 kernel: Arc::clone(&kernel),
                 consent_bridge: Arc::clone(&consent_bridge),
                 ui_element_map: Arc::clone(&ui_element_map),
                 gateway_info: Arc::clone(&gateway_info),
                 reasoning: Arc::clone(&reasoning_bridge),
+                cancel_tx: Arc::new(cancel_tx),
             });
 
             let app_handle = app.handle().clone();
@@ -1409,6 +1434,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             execute_task,
+            cancel_execution,
             resolve_consent,
             get_memory_overview,
             list_gateway_sessions,

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../stores/chatStore";
 import ReasoningPanel from "./ReasoningPanel";
 import {
@@ -178,10 +179,15 @@ export default function ChatInterface({
   };
 
   const handleSubmit = async () => {
-    if (isBooting || isProcessing) {
-      return;
-    }
-    await onSubmit(input);
+    const trimmed = input.trim();
+    if (!trimmed || isBooting || isProcessing) return;
+    await onSubmit(trimmed);
+  };
+
+  const handleCancel = async () => {
+    try {
+      await invoke("cancel_execution");
+    } catch (_) {}
   };
 
   return (
@@ -542,28 +548,48 @@ export default function ChatInterface({
                   width: compactLayout ? "100%" : undefined,
                 }}
               >
-                {/* ── Send button ── */}
-                <button
-                  type="button"
-                  onClick={() => void handleSubmit()}
-                  disabled={isBooting || isProcessing || !input.trim()}
-                  style={{
-                    border: "1px solid #2c588d",
-                    background:
-                      isBooting || isProcessing || !input.trim() ? "#152032" : "#173d68",
-                    color:
-                      isBooting || isProcessing || !input.trim() ? "#607086" : "#edf5ff",
-                    borderRadius: "16px",
-                    padding: "14px 18px",
-                    flex: compactLayout ? 1 : undefined,
-                    minWidth: "110px",
-                    cursor:
-                      isBooting || isProcessing || !input.trim() ? "not-allowed" : "pointer",
-                    fontWeight: 700,
-                  }}
-                >
-                  {isProcessing ? "Running..." : "Send"}
-                </button>
+                {/* ── Send / Stop button ── */}
+                {isProcessing ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleCancel()}
+                    style={{
+                      border: "1px solid #7a2d2d",
+                      background: "#3a1414",
+                      color: "#ff9b9b",
+                      borderRadius: "16px",
+                      padding: "14px 18px",
+                      flex: compactLayout ? 1 : undefined,
+                      minWidth: "110px",
+                      cursor: "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    ⏹ Stop
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleSubmit()}
+                    disabled={isBooting || !input.trim()}
+                    style={{
+                      border: "1px solid #2c588d",
+                      background:
+                        isBooting || !input.trim() ? "#152032" : "#173d68",
+                      color:
+                        isBooting || !input.trim() ? "#607086" : "#edf5ff",
+                      borderRadius: "16px",
+                      padding: "14px 18px",
+                      flex: compactLayout ? 1 : undefined,
+                      minWidth: "110px",
+                      cursor:
+                        isBooting || !input.trim() ? "not-allowed" : "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {isBooting ? "Booting..." : "Send"}
+                  </button>
+                )}
               </div>
             </div>
           </div>

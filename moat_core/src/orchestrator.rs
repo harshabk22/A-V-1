@@ -13,7 +13,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -1921,30 +1921,11 @@ impl WorkerAgent {
         };
 
         // Require MetaBrain tool permission
-        let has_permission = self.ensure_tool_permission("os:click").await.is_ok();
-        if !has_permission {
-            let approved = self
-                .request_action_consent(
-                    intent,
-                    session_id,
-                    agent_label,
-                    Arc::clone(&high_risk_approvals),
-                )
-                .await?;
-            if !approved {
-                return Ok(TaskStatus::Failed {
-                    exit_code: None,
-                    stderr: "CAPABILITY DENIED: User denied os:click permission.".into(),
-                });
-            }
-            {
-                let mut brain = self.meta_brain.write().await;
-                brain.grant_tool_permission(
-                    "os:click",
-                    PermissionFlags::TOOL_EXEC | PermissionFlags::EXEC,
-                )?;
-            }
-            MetaBrain::flush_arc(Arc::clone(&self.meta_brain)).await?;
+        if let Err(reason) = self.ensure_tool_permission("os:click").await {
+            return Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: format!("CAPABILITY DENIED: {}", reason),
+            });
         }
 
         // Execute the click via the bridge
@@ -2010,30 +1991,11 @@ impl WorkerAgent {
         };
 
         // Require MetaBrain tool permission
-        let has_permission = self.ensure_tool_permission("os:type_text").await.is_ok();
-        if !has_permission {
-            let approved = self
-                .request_action_consent(
-                    intent,
-                    session_id,
-                    agent_label,
-                    Arc::clone(&high_risk_approvals),
-                )
-                .await?;
-            if !approved {
-                return Ok(TaskStatus::Failed {
-                    exit_code: None,
-                    stderr: "CAPABILITY DENIED: User denied os:type_text permission.".into(),
-                });
-            }
-            {
-                let mut brain = self.meta_brain.write().await;
-                brain.grant_tool_permission(
-                    "os:type_text",
-                    PermissionFlags::TOOL_EXEC | PermissionFlags::EXEC,
-                )?;
-            }
-            MetaBrain::flush_arc(Arc::clone(&self.meta_brain)).await?;
+        if let Err(reason) = self.ensure_tool_permission("os:type_text").await {
+            return Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: format!("CAPABILITY DENIED: {}", reason),
+            });
         }
 
         // Cap text length for safety
@@ -2346,6 +2308,12 @@ impl WorkerAgent {
                 stderr: "os:applescript requires a payload".into(),
             });
         }
+        if !has_persistent_permission {
+            return Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: "CAPABILITY DENIED: os:applescript requires tool permission.".into(),
+            });
+        }
 
         const APPLESCRIPT_MAX_BYTES: usize = 8_192;
         let script = script_raw.replace('\0', "");
@@ -2451,29 +2419,10 @@ impl WorkerAgent {
         }
 
         if !has_persistent_permission {
-            let approved = self
-                .request_action_consent(
-                    intent,
-                    session_id,
-                    agent_label,
-                    Arc::clone(&high_risk_approvals),
-                )
-                .await?;
-            if !approved {
-                return Ok(TaskStatus::Failed {
-                    exit_code: None,
-                    stderr: "User denied text injection.".into(),
-                });
-            }
-
-            {
-                let mut brain = self.meta_brain.write().await;
-                brain.grant_tool_permission(
-                    "os:inject_text",
-                    PermissionFlags::TOOL_EXEC | PermissionFlags::EXEC,
-                )?;
-            }
-            MetaBrain::flush_arc(Arc::clone(&self.meta_brain)).await?;
+            return Ok(TaskStatus::Failed {
+                exit_code: None,
+                stderr: "CAPABILITY DENIED: os:inject_text requires tool permission.".into(),
+            });
         }
 
         match active_app_matches(&expected_app_name) {
@@ -2970,8 +2919,8 @@ pub struct Orchestrator {
     pub injector_config: crate::injector::InjectorConfig,
     pub swarm_gateway: Option<Arc<SwarmGateway>>,
     pub active_agent: Option<crate::swarm::AgentSpec>,
-    /// Visual-Semantic Driver bridge for os:click / os:type_text.
     pub ui_bridge: Option<Arc<dyn UiActionBridge>>,
+    pub cancel_flag: Arc<AtomicBool>,
 }
 
 impl Orchestrator {
@@ -2991,6 +2940,7 @@ impl Orchestrator {
             swarm_gateway: None,
             active_agent: None,
             ui_bridge: None,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -3009,6 +2959,7 @@ impl Orchestrator {
             swarm_gateway: self.swarm_gateway.clone(),
             active_agent: self.active_agent.clone(),
             ui_bridge: self.ui_bridge.clone(),
+            cancel_flag: Arc::clone(&self.cancel_flag),
         }
     }
 
@@ -3744,6 +3695,12 @@ impl Orchestrator {
             let cached_system_prompt = self.build_react_system_prompt().await?;
 
             loop {
+                if self.cancel_flag.load(Ordering::Relaxed) {
+                    if let Some(tx) = &status_tx {
+                        let _ = tx.send("__TOOL_STATUS__:⏹️ Cancelled by user".to_string()).await;
+                    }
+                    return Ok(ReactOutcome::Completed(results));
+                }
                 turns += 1;
 
                 if turns > max_turns {
@@ -3832,53 +3789,62 @@ impl Orchestrator {
                     let _ = tx.send("__TOOL_STATUS__:🤔 Thinking...".to_string()).await;
                 }
 
-                let (raw, tokens) = match self
+                let (tool_intents, first_raw, tokens) = match self
                     .planner
                     .generate_intent_tools(messages, llm_tools)
                     .await
                 {
                     Ok(mut resp) => {
-                        let mut action = "done".to_string();
-                        let mut target = "user".to_string();
-                        let mut payload = serde_json::Value::Null;
-                        let mut thought: Option<String> = None;
-                        if let Some(mut tc) = resp.tool_calls.take() {
-                            if let Some(t) = tc.pop() {
-                                action = t.function.name;
-                                target = "user".to_string(); // fallback
+                        let mut tool_intents: Vec<ActionIntent> = Vec::new();
+
+                        if let Some(tool_calls) = resp.tool_calls.take() {
+                            for t in tool_calls {
+                                let action = t.function.name;
+                                let mut target = "user".to_string();
+                                let mut payload = serde_json::Value::Null;
                                 if let Ok(args) =
                                     serde_json::from_str::<serde_json::Value>(&t.function.arguments)
                                 {
                                     if let Some(tgt) = args.get("target").and_then(|v| v.as_str()) {
                                         target = tgt.to_string();
                                     }
-                                    if let Some(pld) = args.get("payload") {
-                                        payload = pld.clone();
-                                    }
-                                    if let Some(th) = args.get("_thought").and_then(|v| v.as_str())
-                                    {
-                                        thought = Some(th.to_string());
-                                    }
+                                    if let Some(pld) = args.get("payload") { payload = pld.clone(); }
+                                }
+                                tool_intents.push(ActionIntent { action, target, payload: Some(payload), thought: None });
+                            }
+                        }
+
+                        if tool_intents.is_empty() {
+                            if let Some(content) = &resp.content {
+                                let trimmed = content.trim();
+                                if !trimmed.is_empty() {
+                                    tool_intents.push(ActionIntent {
+                                        action: "done".into(),
+                                        target: "user".into(),
+                                        payload: Some(serde_json::Value::String(trimmed.to_string())),
+                                        thought: None,
+                                    });
                                 }
                             }
-                        } else if let Some(content) = &resp.content {
-                            // No tool_calls returned — LLM gave a conversational reply.
-                            // Treat as "done" with the content as the payload so the user sees it.
-                            let trimmed = content.trim();
-                            if !trimmed.is_empty() {
-                                payload = serde_json::Value::String(trimmed.to_string());
-                            }
                         }
-                        let mut intent_obj = serde_json::json!({
-                            "action": action,
-                            "target": target,
-                            "payload": payload
-                        });
-                        if let Some(th) = thought {
-                            intent_obj["thought"] = serde_json::Value::String(th);
+
+                        if tool_intents.is_empty() {
+                            tool_intents.push(ActionIntent {
+                                action: "done".into(),
+                                target: "user".into(),
+                                payload: Some(serde_json::Value::String("ok".into())),
+                                thought: None,
+                            });
                         }
-                        let intent_json = intent_obj.to_string();
-                        (intent_json, resp.tokens)
+
+                        let first = tool_intents.first()
+                            .cloned()
+                            .unwrap_or(ActionIntent { action: "done".into(), target: "user".into(), payload: None, thought: None });
+                        let first_raw_str = serde_json::to_string(&serde_json::json!({
+                            "action": first.action, "target": first.target, "payload": first.payload
+                        })).unwrap_or_default();
+
+                        (tool_intents, first_raw_str, resp.tokens)
                     }
                     Err(err) => {
                         if let Some(message) = self.missing_key_message_from_error(
@@ -3906,20 +3872,22 @@ impl Orchestrator {
                 };
                 total_tokens += tokens;
 
+                let raw = first_raw;
+
+                // Build intent from tool_intents for special-case handlers
+                let first = tool_intents.first()
+                    .cloned()
+                    .unwrap_or(ActionIntent { action: "done".into(), target: "user".into(), payload: None, thought: None });
+                let intent = first.clone();
+
                 if let Some(tx) = &status_tx {
-                    let monologue = if let Some(start) = raw.find("<action>") {
-                        raw[..start].trim()
-                    } else {
-                        raw.trim()
-                    };
-                    if !monologue.is_empty() {
+                    let monologue = raw.trim();
+                    if !monologue.is_empty() && !monologue.starts_with('{') {
                         let _ = tx.send(format!("__TOOL_STATUS__:🤖 {}", monologue)).await;
                     }
                 }
 
-                let intent = PlannerAgent::parse_intent(&raw);
-
-                if intent.action == "system:parse_error" {
+                if intent.action == "system:parse_error" || intent.action.is_empty() {
                     let observation = "[SYSTEM: Your last response could not be parsed. You MUST respond with a valid <action> JSON block. Try again.]";
                     push_context(
                         &context_trace,
@@ -4701,6 +4669,105 @@ impl Orchestrator {
 
                 let start = std::time::Instant::now();
 
+                // ── Parallel execution: if LLM returned multiple tool_calls,
+                //     execute all capability tasks concurrently ─────────────
+                let parallel_intents: Vec<&ActionIntent> = if tool_intents.len() > 1 {
+                    tool_intents.iter()
+                        .filter(|i| !matches!(i.action.as_str(),
+                            "done" | "system:parse_error" | "swarm:delegate"
+                            | "system:spawn_worker" | "user:ask_choice"
+                            | "memory:search" | "session:search" | "memory:learn"
+                            | "meta:query_brain"))
+                        .collect()
+                } else {
+                    vec![]
+                };
+
+                if parallel_intents.len() > 1 {
+                    if let Some(tx) = &status_tx {
+                        let _ = tx.send(format!(
+                            "__TOOL_STATUS__:⚡ Running {} tools in parallel",
+                            parallel_intents.len()
+                        )).await;
+                    }
+
+                    use futures_util::stream::FuturesUnordered;
+                    use futures_util::StreamExt;
+
+                    let mut futures: FuturesUnordered<_> = parallel_intents.iter().map(|i| {
+                        let intent = (*i).clone();
+                        let worker = Arc::clone(&self.worker);
+                        let root_node_id = root_node_id;
+                        let session_id = session_id.clone();
+                        let agent_label = agent_label.clone();
+                        let approvals = Arc::clone(&high_risk_approvals);
+                        let world = execution_world_state.clone();
+                        async move {
+                            let result = worker.execute_capability_task(
+                                &intent,
+                                root_node_id,
+                                &session_id,
+                                &agent_label,
+                                approvals,
+                                world,
+                            ).await;
+                            (intent.action.clone(), intent.target.clone(), result)
+                        }
+                    }).collect();
+
+                    let mut parallel_results: Vec<(String, String, MoatResult<TaskStatus>)> = vec![];
+                    while let Some(result) = futures.next().await {
+                        parallel_results.push(result);
+                    }
+
+                    let mut obs_lines = vec![format!("Turn {} — Parallel batch ({} tools):", turns, parallel_intents.len())];
+                    let mut all_success = true;
+                    for (i, (action, target, result)) in parallel_results.iter().enumerate() {
+                        match result {
+                            Ok(status) => {
+                                let status_str = match status {
+                                    TaskStatus::Success { stdout } => format!("SUCCESS: {}", stdout),
+                                    TaskStatus::SoftDenial { reason } => format!("SOFT DENIAL: {}", reason),
+                                    TaskStatus::Failed { stderr, .. } => format!("FAILED: {}", stderr),
+                                    TaskStatus::Blocked { .. } => "BLOCKED".into(),
+                                    TaskStatus::Cancelled { stage } => format!("CANCELLED: {}", stage),
+                                };
+                                obs_lines.push(format!("  [{}] {} → {}: {}", i + 1, action, target, status_str));
+                                results.push(SubTaskResult {
+                                    subtask_id: turns,
+                                    action: action.clone(),
+                                    target: target.clone(),
+                                    status: status.clone(),
+                                    elapsed: start.elapsed(),
+                                    tokens_used: tokens,
+                                });
+                            }
+                            Err(e) => {
+                                obs_lines.push(format!("  [{}] {} → {}: ERROR {}", i + 1, action, target, e));
+                                all_success = false;
+                            }
+                        }
+                    }
+
+                    if let Some(tx) = &status_tx {
+                        let _ = tx.send(format!(
+                            "__TOOL_STATUS__:{} Parallel batch completed ({})",
+                            if all_success { "✅" } else { "❌" },
+                            parallel_intents.len()
+                        )).await;
+                    }
+
+                    let observation = obs_lines.join("\n");
+                    push_context(&context_trace, LlmMessage {
+                        role: "system".into(),
+                        content: Some(observation),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    }).await;
+                    continue;
+                }
+                // ── End parallel execution ─────────────────────────────────
+
                 if let Some(tx) = &status_tx {
                     let target_str = if intent.target.is_empty() {
                         String::new()
@@ -4912,7 +4979,7 @@ const CHAT_REPLY_TIMEOUT: Duration = Duration::from_secs(180);
 #[cfg(test)]
 const CHAT_REPLY_TIMEOUT: Duration = Duration::from_millis(50);
 #[cfg(not(test))]
-const PLANNER_REPLY_TIMEOUT: Duration = Duration::from_secs(180);
+const PLANNER_REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(test)]
 const PLANNER_REPLY_TIMEOUT: Duration = Duration::from_millis(50);
 
@@ -5996,6 +6063,60 @@ mod tests {
             )
             .expect("count learned skills");
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn cancel_flag_stops_react_loop_immediately() {
+        let db_path = std::env::temp_dir().join(format!("moat_cancel_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let db = prepare_test_db(&db_path);
+        let meta_brain = Arc::new(AsyncRwLock::new(MetaBrain::new()));
+        let provider = Arc::new(StubProvider::new(vec![(
+            r#"{"action":"done","target":"user","payload":"ok","_thought":""}"#
+                .into(),
+            4,
+        )]));
+        let planner = PlannerAgent::new(
+            PlannerConfig {
+                model: "cancel-test".into(),
+                max_subtasks: 1,
+                temperature: 0.0,
+                max_tokens: 64,
+            },
+            provider.clone(),
+        );
+        let worker = WorkerAgent::new(
+            WorkerConfig {
+                model: "cancel-test".into(),
+                command_timeout: Duration::from_secs(1),
+                allow_high_risk: true,
+                external_apis: ExternalApiConfig::default(),
+            },
+            Arc::clone(&meta_brain),
+            Arc::clone(&db),
+        )
+        .expect("worker");
+        let orchestrator = Orchestrator::new(
+            planner,
+            worker,
+            meta_brain,
+            db,
+            test_injector_config(),
+        );
+
+        orchestrator.cancel_flag.store(true, Ordering::SeqCst);
+
+        let results = orchestrator
+            .run_react("test", "bootstrap", SYSTEM_ROOT_ID, None)
+            .await
+            .expect("cancelled react should return Ok");
+
+        assert!(
+            results.is_empty(),
+            "cancelled run should return empty results, got {:?}",
+            results
+        );
+        let _ = std::fs::remove_file(&db_path);
     }
 }
 enum ClipboardBackup {

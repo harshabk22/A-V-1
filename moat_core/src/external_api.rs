@@ -1254,6 +1254,7 @@ impl LlmProvider for DeepSeekExternalClient {
                 .map_err(|err| MoatError::Llm(format!("deepseek JSON parse: {err}")))?;
 
             let (text, tokens) = extract_chat_completion_content(&payload, "deepseek")?;
+            let text = text.replace("__", ":");
             Ok((text, tokens))
         })
     }
@@ -1324,10 +1325,15 @@ impl LlmProvider for DeepSeekExternalClient {
                 .get("message")
                 .ok_or_else(|| MoatError::Llm("deepseek response missing message".into()))?;
 
-            let content = message
+            let mut content = message
                 .get("content")
                 .and_then(serde_json::Value::as_str)
                 .map(|s| s.to_string());
+            if let Some(ref c) = content {
+                if c.contains("__") {
+                    content = Some(c.replace("__", ":"));
+                }
+            }
 
             let mut tool_calls: Option<Vec<LlmToolCall>> =
                 if let Some(tc_val) = message.get("tool_calls") {

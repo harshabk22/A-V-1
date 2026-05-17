@@ -1,7 +1,14 @@
 use chrono::Local;
 use dashmap::DashMap;
 use rusqlite::Connection;
-use std::{collections::HashMap, env, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    env,
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::{mpsc::Sender, Mutex as AsyncMutex, RwLock as AsyncRwLock};
 use uuid::Uuid;
 
@@ -310,6 +317,7 @@ mod tests {
             process_timeout: Duration::from_secs(5),
             memory_top_k: 5,
             memory_max_chars: 600,
+            cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             planner_defaults: PlannerConfig {
                 model: "stub-planner".into(),
                 max_subtasks: 15,
@@ -613,6 +621,8 @@ pub struct MoatSystem {
     planner_defaults: PlannerConfig,
     trust_store: Arc<TrustStore>,
 
+    pub cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+
     swarm_workspace_root: Option<PathBuf>,
     default_swarm_agent_preference: Option<String>,
     pub swarm_gateway: Arc<AsyncRwLock<Option<Arc<SwarmGateway>>>>,
@@ -873,6 +883,7 @@ impl MoatSystem {
         )
         .await;
 
+        let cancel_flag = Arc::new(AtomicBool::new(false));
         let planner = PlannerAgent::new(planner_defaults.clone(), Arc::clone(&planner_provider));
         let mut orchestrator = Orchestrator::new(
             planner,
@@ -881,6 +892,7 @@ impl MoatSystem {
             Arc::clone(&db),
             injector_config.clone(),
         );
+        orchestrator.cancel_flag = Arc::clone(&cancel_flag);
         if let Some(bridge) = ui_bridge {
             orchestrator = orchestrator.with_ui_bridge(bridge);
         }
@@ -905,6 +917,7 @@ impl MoatSystem {
             process_timeout: cfg.process_timeout,
             memory_top_k: injector_config.top_k_memories,
             memory_max_chars: injector_config.max_memory_chars,
+            cancel_flag,
             planner_defaults,
             trust_store,
             swarm_workspace_root,
@@ -1696,6 +1709,7 @@ impl MoatSystem {
         session_id: Uuid,
         source: SessionSource,
     ) -> MoatResult<Vec<SubTaskResult>> {
+        self.cancel_flag.store(false, Ordering::SeqCst);
         let session_context = self.gateway.session_prompt_context(session_id);
         let specialization_hint = Self::authoritative_specialization_hint(user_query, source);
 
