@@ -49,7 +49,7 @@ function mergeStreamingText(previous: string, incoming: string): string {
   if (!previous) {
     return incoming;
   }
-  if (incoming.startsWith(previous)) {
+  if (incoming.length > previous.length && incoming.startsWith(previous)) {
     return incoming;
   }
   return `${previous}${incoming}`;

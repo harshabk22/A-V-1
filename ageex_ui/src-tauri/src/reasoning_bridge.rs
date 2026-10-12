@@ -50,6 +50,9 @@ impl ReasoningBridge {
     }
 
     pub async fn init_engine(&mut self) -> Result<(), String> {
+        if self.engine.is_some() {
+            return Ok(());
+        }
         let (engine, rx) = ReasoningEngine::new()
             .map_err(|e| format!("Failed to create ReasoningEngine: {}", e))?;
         self.engine = Some(engine);

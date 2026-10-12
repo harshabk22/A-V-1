@@ -84,7 +84,9 @@ export const useReasoningStore = create<ReasoningState>((set, get) => ({
         agentId: event.agentId,
         message: `airgap_send seq=${event.seq} op=${event.op}`,
       };
-      const idx = state.agents.findIndex((a) => a.agentId === event.agentId);
+      const idx = state.agents.findIndex(
+        (a) => a.agentId === event.agentId || a.agentId.endsWith(`:${event.agentId}`)
+      );
       const existing = idx >= 0 ? state.agents[idx] : undefined;
       const updatedAgent: AgentStatus = existing
         ? {
@@ -133,7 +135,9 @@ export const useReasoningStore = create<ReasoningState>((set, get) => ({
           ? `yielded: ${event.yieldMessage}`
           : "agent yielded",
       };
-      const idx = state.agents.findIndex((a) => a.agentId === event.agentId);
+      const idx = state.agents.findIndex(
+        (a) => a.agentId === event.agentId || a.agentId.endsWith(`:${event.agentId}`)
+      );
       const existing = idx >= 0 ? state.agents[idx] : undefined;
       const updatedAgent: AgentStatus = existing
         ? {

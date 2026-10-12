@@ -54,8 +54,8 @@ impl MemoryManagerAgent {
         let guard_result = self.guardrails.guard_input(&raw_summary);
 
         let summary = guard_result.sanitized;
-        let summary = if summary.len() > self.max_summary_chars {
-            summary[..self.max_summary_chars].to_string()
+        let summary = if summary.chars().count() > self.max_summary_chars {
+            summary.chars().take(self.max_summary_chars).collect::<String>()
         } else {
             summary
         };
@@ -89,8 +89,8 @@ impl MemoryManagerAgent {
         let raw = self.build_raw_summary(&filtered);
         let guard_result = self.guardrails.guard_input(&raw);
 
-        let context = if guard_result.sanitized.len() > max_chars {
-            guard_result.sanitized[..max_chars].to_string()
+        let context = if guard_result.sanitized.chars().count() > max_chars {
+            guard_result.sanitized.chars().take(max_chars).collect::<String>()
         } else {
             guard_result.sanitized
         };
@@ -105,8 +105,8 @@ impl MemoryManagerAgent {
         if summary.is_empty() {
             return Ok(String::new());
         }
-        let truncated = if summary.len() > max_chars {
-            summary[..max_chars].to_string()
+        let truncated = if summary.chars().count() > max_chars {
+            summary.chars().take(max_chars).collect::<String>()
         } else {
             summary
         };

@@ -13,7 +13,6 @@ const AERR_NONE: i32 = AirgapError::None as i32;
 const AERR_INVALID_OP: i32 = AirgapError::InvalidOp as i32;
 #[allow(dead_code)]
 const AERR_MALFORMED: i32 = AirgapError::MalformedPayload as i32;
-#[allow(dead_code)]
 const AERR_BUFFER_OVERFLOW: i32 = AirgapError::BufferOverflow as i32;
 const AERR_PERMISSION_DENIED: i32 = AirgapError::PermissionDenied as i32;
 const AERR_MEMORY_OOB: i32 = AirgapError::MemoryOutOfBounds as i32;
@@ -320,7 +319,19 @@ async fn process_airgap_send_async(
 
     let response_bytes = response.encode_response();
 
-    if resp_cap as usize >= response_bytes.len() && resp_ptr > 0 {
+    if (resp_cap as usize) < response_bytes.len() {
+        tracing::error!(
+            target: "ageex.reasoning",
+            agent_id = ?agent_id,
+            seq,
+            "guest response buffer capacity insufficient: {} < {}",
+            resp_cap,
+            response_bytes.len()
+        );
+        return AERR_BUFFER_OVERFLOW;
+    }
+
+    if resp_ptr > 0 || !response_bytes.is_empty() {
         if let Err(e) = mem.write(caller, resp_ptr as usize, &response_bytes) {
             tracing::error!(target: "ageex.reasoning", agent_id=?agent_id, seq, "write to WASM memory failed: {:?}", e);
             return AERR_MEMORY_OOB;

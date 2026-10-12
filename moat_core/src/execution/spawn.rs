@@ -92,7 +92,6 @@ impl AgentPool {
                 remaining: parent_ctx.remaining_fuel,
             });
         }
-        parent_ctx.deduct_fuel(requested_fuel);
         // 3. Spawn depth cap
         if parent_ctx.spawn_depth >= MAX_SPAWN_DEPTH {
             return Err(SpawnError::DepthExceeded {
@@ -100,6 +99,7 @@ impl AgentPool {
                 max: MAX_SPAWN_DEPTH,
             });
         }
+        parent_ctx.deduct_fuel(requested_fuel);
         Ok(SpawnContext {
             capability_mask: requested_caps,
             remaining_fuel: requested_fuel,

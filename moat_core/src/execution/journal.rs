@@ -53,7 +53,7 @@ impl ExecutionJournal {
             "exit_code": res.exit_code,
             "denied_reason": res.denied_reason,
             "execution_time_ms": res.execution_time_ms,
-            "output_preview": &res.output[..res.output.len().min(200)],
+            "output_preview": res.output.chars().take(200).collect::<String>(),
         });
         self.append_line(&serde_json::to_string(&entry)?)
     }

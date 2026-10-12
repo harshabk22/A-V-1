@@ -98,6 +98,9 @@ export default function ConsentModal() {
 
     const blockEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (integrityState === "tampered" || integrityState === "identical_hashes") {
+          removeRequest(pending.request_id);
+        }
         event.preventDefault();
         event.stopPropagation();
       }
@@ -105,7 +108,7 @@ export default function ConsentModal() {
 
     window.addEventListener("keydown", blockEscape, true);
     return () => window.removeEventListener("keydown", blockEscape, true);
-  }, [pending]);
+  }, [pending, integrityState, removeRequest]);
 
   const payloadPreview = useMemo(() => {
     if (!pending) {
@@ -130,20 +133,31 @@ export default function ConsentModal() {
     }
 
     setResolving(true);
-    let resolved = false;
+    let shouldRemove = false;
     try {
       await invoke("resolve_consent", {
         requestId: pending.request_id,
         decision,
       });
-      resolved = true;
+      shouldRemove = true;
       if (queue.length <= 1) {
         setStatusText("● RUST HYPERVISOR ACTIVE");
       }
     } catch (error) {
       addSystemMessage(`[CONSENT ERROR]\n${String(error)}`);
+      // If the backend already dropped or expired the request, remove it to prevent permanent deadlock
+      const errStr = String(error).toLowerCase();
+      if (
+        errStr.includes("unknown") ||
+        errStr.includes("already-resolved") ||
+        errStr.includes("timeout") ||
+        errStr.includes("timed out") ||
+        errStr.includes("expired")
+      ) {
+        shouldRemove = true;
+      }
     } finally {
-      if (resolved) {
+      if (shouldRemove) {
         removeRequest(pending.request_id);
       }
       setResolving(false);

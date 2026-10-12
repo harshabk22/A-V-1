@@ -128,15 +128,13 @@ impl ReasoningInstance {
     /// Invoke the agent's `agent_step()` export with a fuel budget.
     /// Returns once the agent yields or exhausts its fuel.
     pub async fn call_step(&mut self, fuel: Option<u64>) -> Result<StepOutcome, Error> {
-        let fuel_before = self.store.get_fuel()?;
-
-        self.store
-            .set_fuel(fuel.unwrap_or(DEFAULT_FUEL_BUDGET))?;
+        let budget = fuel.unwrap_or(DEFAULT_FUEL_BUDGET);
+        self.store.set_fuel(budget)?;
 
         let result = self.step_func.call_async(&mut self.store, ()).await;
 
         let fuel_after = self.store.get_fuel()?;
-        let fuel_used = fuel_before.saturating_sub(fuel_after);
+        let fuel_used = budget.saturating_sub(fuel_after);
 
         match result {
             Ok(()) | Err(_) => {}
