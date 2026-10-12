@@ -100,18 +100,22 @@ use profile::ProfileStore;
 use trust_store::TrustStore;
 use execution::journal_chain::verify_chain;
 use anyhow::Result;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub struct System {
+    #[allow(dead_code)]
     agent_kind: AgentKind,
     router: Option<Router>,
     agent1: Agent1,
     agent2: Option<Agent2>,
     tool_executor_agent1: ToolExecutor,
     tool_executor_agent2: Option<ToolExecutor>,
+    #[allow(dead_code)]
     session_store: Arc<SessionStore>,
+    #[allow(dead_code)]
     profile_store: Arc<ProfileStore>,
+    #[allow(dead_code)]
     trust_store: Arc<TrustStore>,
 }
 

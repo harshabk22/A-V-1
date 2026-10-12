@@ -68,12 +68,15 @@ export default function SettingsModal({
 
   useEffect(() => {
     if (!isOpen || !settings) return;
-    setProvider("nvidia");
+    const initialProvider: Provider =
+      settings?.hasDeepseek && !settings?.hasNvidia ? "deepseek" : "nvidia";
+    setProvider(initialProvider);
     setNvidia(buildProviderState());
     setDeepseek(buildProviderState());
-    setChatModel(settings.chatModel ?? defaults.chat);
-    setPlannerModel(settings.plannerModel ?? defaults.planner);
-    setWorkerModel(settings.workerModel ?? defaults.worker);
+    const initialDefaults = PROVIDER_DEFAULTS[initialProvider];
+    setChatModel(settings.chatModel ?? initialDefaults.chat);
+    setPlannerModel(settings.plannerModel ?? initialDefaults.planner);
+    setWorkerModel(settings.workerModel ?? initialDefaults.worker);
     setAvailableModels([]);
     setIsLoadingModels(false);
     setIsValidatingInference(false);
@@ -152,9 +155,11 @@ export default function SettingsModal({
       try {
         const uniqueModels = [...new Set([normalizedChatModel, normalizedPlannerModel, normalizedWorkerModel])];
         const validateCmd = provider === "nvidia" ? "validate_nvidia_inference" : "validate_deepseek_inference";
-        for (const model of uniqueModels) {
-          await invoke<boolean>(validateCmd, { apiKey: validationApiKey, modelName: model });
-        }
+        await Promise.all(
+          uniqueModels.map((model) =>
+            invoke<boolean>(validateCmd, { apiKey: validationApiKey, modelName: model }),
+          ),
+        );
       } catch (error) {
         setModelCatalogError(String(error));
         setIsValidatingInference(false);

@@ -117,6 +117,7 @@ impl Message {
 
 pub struct ContextStore {
     messages: Arc<Mutex<Vec<Message>>>,
+    #[allow(dead_code)]
     system_prompt: String,
     tags: Arc<Mutex<Vec<String>>>,
 }
@@ -207,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_mark_tag_and_has_tag() {
-        let mut store = ContextStore::new("system prompt");
+        let store = ContextStore::new("system prompt");
         assert!(!store.has_tag("tool_details_injected"));
         store.mark_tag("tool_details_injected");
         assert!(store.has_tag("tool_details_injected"));

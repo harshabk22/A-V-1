@@ -75,6 +75,7 @@ struct DynamicProvider {
 }
 
 impl LlmProvider for DynamicProvider {
+    #[allow(deprecated)]
     fn complete<'a>(
         &'a self,
         model: &'a str,
@@ -619,6 +620,7 @@ pub struct MoatSystem {
     pub memory_top_k: usize,
     pub memory_max_chars: usize,
     planner_defaults: PlannerConfig,
+    #[allow(dead_code)]
     trust_store: Arc<TrustStore>,
 
     pub cancel_flag: Arc<std::sync::atomic::AtomicBool>,
@@ -1307,6 +1309,7 @@ impl MoatSystem {
         lines.join("\n")
     }
 
+    #[allow(deprecated)]
     async fn maybe_compact_session(
         &self,
         session_id: Uuid,
@@ -1540,6 +1543,7 @@ impl MoatSystem {
         result
     }
 
+    #[allow(dead_code)]
     async fn worker_descriptors(&self) -> MoatResult<Vec<WorkerDescriptor>> {
         let gateway = self.swarm_gateway.read().await.clone();
         if let Some(gateway) = gateway {

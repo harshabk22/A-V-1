@@ -157,7 +157,9 @@ impl ReasoningInstance {
             .lock()
             .map(|v| v.clone())
             .unwrap_or_default();
-        data.violations.lock().map(|mut v| v.clear());
+        if let Ok(mut v) = data.violations.lock() {
+            v.clear();
+        }
 
         if is_trap && !agent_yielded {
             return Err(Error::msg(format!(

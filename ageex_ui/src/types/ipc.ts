@@ -365,7 +365,7 @@ export interface AirgapEnvelopeEvent {
   agentId: string;
   seq: number;
   op: string;
-  requestBytes: number[];
+  requestBytes?: number[];
 }
 
 export interface SecurityViolationEvent {

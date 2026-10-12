@@ -19,7 +19,6 @@ export const useConsentStore = create<ConsentState>((set) => ({
   addRequest: (request) =>
     set((state) => ({
       queue: [...state.queue, request],
-      isResolving: false,
     })),
   removeRequest: (requestId) =>
     set((state) => ({

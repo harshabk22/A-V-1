@@ -1,4 +1,4 @@
-use super::{Message, Role, SummaryTemplate, TokenBudget};
+use super::{Message, Role, SummaryTemplate};
 use anyhow::Result;
 
 pub struct ContextCompressor;

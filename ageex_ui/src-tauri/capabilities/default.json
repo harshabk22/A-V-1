@@ -5,7 +5,6 @@
   "windows": ["main", "command_bar"],
   "permissions": [
     "core:default",
-    "opener:default",
     "core:window:allow-hide",
     "core:window:allow-show",
     "core:window:allow-close",

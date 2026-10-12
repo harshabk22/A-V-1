@@ -5,6 +5,13 @@ use std::path::PathBuf;
 fn example_agent_wasm() -> Vec<u8> {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let wasm_path = crate_dir.join("../../wasm/target/wasm32-wasip1/debug/example_agent.wasm");
+    if !wasm_path.exists() {
+        let wasm_manifest = crate_dir.join("../../wasm/Cargo.toml");
+        let status = std::process::Command::new("cargo")
+            .args(["build", "--manifest-path", wasm_manifest.to_str().unwrap()])
+            .status();
+        let _ = status;
+    }
     std::fs::read(&wasm_path).expect(&format!(
         "example_agent.wasm not found at {:?}. Build it first: cd wasm && cargo build",
         wasm_path

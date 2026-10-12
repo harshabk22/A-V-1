@@ -1,5 +1,4 @@
-use super::scanners::{ScanResult, Scanner};
-use std::sync::Arc;
+use super::scanners::Scanner;
 
 /// Composable guardrails that wrap any LLM operation.
 /// Scans BOTH input (prompts) and output (responses) through

@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 mod context_scraper;
 mod ui_bridge_impl;
 mod ui_scraper;
@@ -200,16 +202,6 @@ struct ExecuteTaskResponse {
     role: String,
 }
 
-async fn forward_status_channel(app: tauri::AppHandle) -> tokio::sync::mpsc::Sender<String> {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-    tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            let _ = app.emit("live-telemetry", msg);
-        }
-    });
-    tx
-}
-
 async fn gateway_server_info_from_state(
     state: &tauri::State<'_, AppState>,
 ) -> Result<GatewayServerInfo, String> {
@@ -346,8 +338,7 @@ async fn call_gateway_rpc(
                 ) = (app, event)
                 {
                     if event_request_id == request_id {
-                        if message.starts_with("__STREAM_CHUNK__:") {
-                            let text = message["__STREAM_CHUNK__:".len()..].to_string();
+                        if let Some(text) = message.strip_prefix("__STREAM_CHUNK__:") {
                             let _ = app_handle.emit(
                                 GATEWAY_SERVER_EVENT_NAME,
                                 serde_json::json!({
@@ -463,13 +454,10 @@ fn format_gateway_execution_output(response: GatewayWireResponse) -> Result<Exec
                 "Action: {} → {}\n",
                 res.action, res.target
             ));
-            match &res.status {
-                GatewayWireTaskStatus::Success { stdout } => {
-                    if !stdout.trim().is_empty() {
-                        verbose.push_str(&format!("Result: {}\n", stdout.trim()));
-                    }
+            if let GatewayWireTaskStatus::Success { stdout } = &res.status {
+                if !stdout.trim().is_empty() {
+                    verbose.push_str(&format!("Result: {}\n", stdout.trim()));
                 }
-                _ => {}
             }
         }
         if verbose.trim().is_empty() {
@@ -1140,6 +1128,9 @@ async fn instantiate_agent(
 ) -> Result<Vec<String>, String> {
     use base64::Engine;
     let mut bridge = state.reasoning.lock().await;
+    if bridge.engine.is_none() {
+        bridge.init_engine().await?;
+    }
     let engine = bridge
         .engine
         .as_ref()

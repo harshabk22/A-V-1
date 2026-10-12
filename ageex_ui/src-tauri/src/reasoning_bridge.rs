@@ -1,9 +1,10 @@
-use ageex_reasoning::{AirgapBundle, AirgapEnvelope, ReasoningEngine, ReasoningInstance};
+use ageex_reasoning::{AirgapBundle, ReasoningEngine, ReasoningInstance};
 use ageex_wire::AirgapRequest;
 use serde::Serialize;
 use std::collections::HashMap;
 use tauri::{AppHandle, Emitter};
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStatusPayload {
@@ -15,6 +16,7 @@ pub struct AgentStatusPayload {
     pub yield_message: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReasoningStatusPayload {
@@ -55,6 +57,7 @@ impl ReasoningBridge {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_status(&self) -> ReasoningStatusPayload {
         let agents: Vec<AgentStatusPayload> = self
             .instances
@@ -106,7 +109,7 @@ pub fn start_envelope_poller(app: AppHandle, rx: tokio::sync::mpsc::UnboundedRec
                     "agentId": agent_id_hex,
                     "seq": response.seq,
                     "op": response.op.name(),
-                    "is_success": matches!(response.result, ageex_wire::AirgapResult::Success(_)),
+                    "isSuccess": matches!(response.result, ageex_wire::AirgapResult::Success(_)),
                 }),
             );
 

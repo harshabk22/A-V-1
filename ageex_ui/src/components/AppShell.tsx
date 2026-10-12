@@ -155,158 +155,158 @@ export default function AppShell() {
   }, []);
 
   useEffect(() => {
-    let active = true;
-    const unlisteners: UnlistenFn[] = [];
+    let isMounted = true;
+    let unlisteners: UnlistenFn[] = [];
 
     const attach = async () => {
-      unlisteners.push(
-        await listen<ConsentRequest>(CONSENT_EVENT_NAME, (event) => {
-          addRequest(event.payload);
-          useChatStore.getState().setStatusText("⚠️ WAITING FOR USER CONSENT");
-        }),
-      );
+      try {
+        const listeners = await Promise.all([
+          listen<ConsentRequest>(CONSENT_EVENT_NAME, (event) => {
+            addRequest(event.payload);
+            useChatStore.getState().setStatusText("⚠️ WAITING FOR USER CONSENT");
+          }),
 
-      unlisteners.push(
-        await listen<string>(LIVE_TELEMETRY_EVENT_NAME, (event) => {
-          const payload = String(event.payload);
+          listen<string>(LIVE_TELEMETRY_EVENT_NAME, (event) => {
+            const payload = String(event.payload);
 
-          const askChoice = parseAskChoiceTelemetry(payload);
-          if (askChoice) {
-            addChoiceMessage(askChoice.context, askChoice.options, askChoice.request_id);
-            return;
-          }
+            const askChoice = parseAskChoiceTelemetry(payload);
+            if (askChoice) {
+              addChoiceMessage(askChoice.context, askChoice.options, askChoice.request_id);
+              return;
+            }
 
-          const backgroundFault = parseBackgroundErrorTelemetry(payload);
-          if (backgroundFault) {
-            setFaults((current) => {
-              const next = [backgroundFault, ...current];
-              return next.slice(0, 5);
-            });
-            return;
-          }
+            const backgroundFault = parseBackgroundErrorTelemetry(payload);
+            if (backgroundFault) {
+              setFaults((current) => {
+                const next = [backgroundFault, ...current];
+                return next.slice(0, 5);
+              });
+              return;
+            }
 
-          if (payload.startsWith("__TOOL_STATUS__:")) {
-            const statusMsg = payload.slice("__TOOL_STATUS__:".length);
-            useChatStore.getState().setStatusText(statusMsg);
-            return;
-          }
+            if (payload.startsWith("__TOOL_STATUS__:")) {
+              const statusMsg = payload.slice("__TOOL_STATUS__:".length);
+              useChatStore.getState().setStatusText(statusMsg);
+              return;
+            }
 
-          const workerContext = parseWorkerContextRequestTelemetry(payload);
-          if (workerContext) {
-            addSystemMessage(
-              `[WORKER CONTEXT REQUEST]\n${workerContext.task_id} · ${workerContext.question}\nBlocking: ${workerContext.blocking ? "yes" : "no"} · Timeout: ${workerContext.timeout_secs}s`,
-            );
-            return;
-          }
-        }),
-      );
+            const workerContext = parseWorkerContextRequestTelemetry(payload);
+            if (workerContext) {
+              addSystemMessage(
+                `[WORKER CONTEXT REQUEST]\n${workerContext.task_id} · ${workerContext.question}\nBlocking: ${workerContext.blocking ? "yes" : "no"} · Timeout: ${workerContext.timeout_secs}s`,
+              );
+              return;
+            }
+          }),
 
-      unlisteners.push(
-        await listen(KERNEL_READY_EVENT_NAME, () => {
-          setBooting(false);
-          setStatusText("○ STANDBY");
-        }),
-      );
+          listen(KERNEL_READY_EVENT_NAME, () => {
+            setBooting(false);
+            setStatusText("○ STANDBY");
+          }),
 
-      unlisteners.push(
-        await listen<GatewayServerEvent>(GATEWAY_SERVER_EVENT_NAME, (event) => {
-          const gatewayEvent = event.payload;
-          if (gatewayEvent.kind === "token_stream") {
-            const streamKey = gatewayEvent.request_id ?? gatewayEvent.session_id ?? "stream:default";
-            useChatStore.getState().upsertStreamingMessage({
-              agent_id: streamKey,
-              turn: 0,
-              content: gatewayEvent.text,
-              is_partial: true,
-              role: "agent",
-            });
-            return;
-          }
+          listen<GatewayServerEvent>(GATEWAY_SERVER_EVENT_NAME, (event) => {
+            const gatewayEvent = event.payload;
+            if (gatewayEvent.kind === "token_stream") {
+              const streamKey = gatewayEvent.request_id ?? gatewayEvent.session_id ?? "stream:default";
+              useChatStore.getState().upsertStreamingMessage({
+                agent_id: streamKey,
+                turn: 0,
+                content: gatewayEvent.text,
+                is_partial: true,
+                role: "agent",
+              });
+              return;
+            }
 
-          if (
-            gatewayEvent.kind !== "session_created" &&
-            gatewayEvent.kind !== "session_message_appended" &&
-            gatewayEvent.kind !== "session_compacted" &&
-            gatewayEvent.kind !== "session_resolved"
-          ) {
-            return;
-          }
+            if (
+              gatewayEvent.kind !== "session_created" &&
+              gatewayEvent.kind !== "session_message_appended" &&
+              gatewayEvent.kind !== "session_compacted" &&
+              gatewayEvent.kind !== "session_resolved"
+            ) {
+              return;
+            }
 
-          const preferredSessionId =
-            selectedSessionIdRef.current ??
-            ("session_id" in gatewayEvent ? gatewayEvent.session_id : null);
+            const preferredSessionId =
+              selectedSessionIdRef.current ??
+              ("session_id" in gatewayEvent ? gatewayEvent.session_id : null);
 
-          void invoke<GatewaySessionRecord[]>("list_gateway_sessions", { limit: 24 })
-            .then((sessions) => {
-              if (!active) {
-                return;
-              }
-              setGatewaySessions(sessions);
-              const nextSessionId =
-                preferredSessionId &&
-                sessions.some((session) => session.sessionId === preferredSessionId)
-                  ? preferredSessionId
-                  : sessions[0]?.sessionId ?? null;
-              setSelectedSessionId(nextSessionId);
+            void invoke<GatewaySessionRecord[]>("list_gateway_sessions", { limit: 24 })
+              .then((sessions) => {
+                if (!isMounted) {
+                  return;
+                }
+                setGatewaySessions(sessions);
+                const nextSessionId =
+                  preferredSessionId &&
+                  sessions.some((session) => session.sessionId === preferredSessionId)
+                    ? preferredSessionId
+                    : sessions[0]?.sessionId ?? null;
+                setSelectedSessionId(nextSessionId);
 
-              if (!nextSessionId) {
-                setSelectedSessionContext(null);
-                return;
-              }
+                if (!nextSessionId) {
+                  setSelectedSessionContext(null);
+                  return;
+                }
 
-              void invoke<GatewaySessionContext>("get_gateway_session_context", {
-                sessionId: nextSessionId,
-                maxChars: 2200,
-              })
-                .then((context) => {
-                  if (active) {
-                    setSelectedSessionContext(context);
-                  }
+                void invoke<GatewaySessionContext>("get_gateway_session_context", {
+                  sessionId: nextSessionId,
+                  maxChars: 2200,
                 })
-                .catch(() => {
-                  if (active) {
-                    setSelectedSessionContext(null);
-                  }
-                });
-
-              if (gatewayEvent.kind === "session_compacted") {
-                void invoke<MemoryOverview>("get_memory_overview")
-                  .then((overview) => {
-                    if (active) {
-                      setMemoryOverview(overview);
-                      setKnowledgeEntries(overview.knowledge);
+                  .then((context) => {
+                    if (isMounted) {
+                      setSelectedSessionContext(context);
                     }
                   })
                   .catch(() => {
-                    // keep background refresh failures quiet
+                    if (isMounted) {
+                      setSelectedSessionContext(null);
+                    }
                   });
-              }
-            })
-            .catch(() => {
-              // Keep gateway event failures quiet in the background; explicit user actions already surface hard errors.
-            });
-        }),
-      );
-      unlisteners.push(
-        await listen<AirgapEnvelopeEvent>(REASONING_ENVELOPE_EVENT, (event) => {
-          useReasoningStore.getState().handleEnvelopeEvent(event.payload);
-        }),
-      );
-      unlisteners.push(
-        await listen<SecurityViolationEvent>(REASONING_VIOLATION_EVENT, (event) => {
-          useReasoningStore.getState().handleViolationEvent(event.payload);
-        }),
-      );
-      unlisteners.push(
-        await listen<AgentYieldEvent>(REASONING_YIELD_EVENT, (event) => {
-          useReasoningStore.getState().handleYieldEvent(event.payload);
-        }),
-      );
-      unlisteners.push(
-        await listen<AirgapResponseEvent>(REASONING_RESPONSE_EVENT, (event) => {
-          useReasoningStore.getState().handleAirgapResponseEvent(event.payload);
-        }),
-      );
+
+                if (gatewayEvent.kind === "session_compacted") {
+                  void invoke<MemoryOverview>("get_memory_overview")
+                    .then((overview) => {
+                      if (isMounted) {
+                        setMemoryOverview(overview);
+                        setKnowledgeEntries(overview.knowledge);
+                      }
+                    })
+                    .catch(() => {
+                      // keep background refresh failures quiet
+                    });
+                }
+              })
+              .catch(() => {
+                // Keep gateway event failures quiet in the background; explicit user actions already surface hard errors.
+              });
+          }),
+
+          listen<AirgapEnvelopeEvent>(REASONING_ENVELOPE_EVENT, (event) => {
+            useReasoningStore.getState().handleEnvelopeEvent(event.payload);
+          }),
+
+          listen<SecurityViolationEvent>(REASONING_VIOLATION_EVENT, (event) => {
+            useReasoningStore.getState().handleViolationEvent(event.payload);
+          }),
+
+          listen<AgentYieldEvent>(REASONING_YIELD_EVENT, (event) => {
+            useReasoningStore.getState().handleYieldEvent(event.payload);
+          }),
+
+          listen<AirgapResponseEvent>(REASONING_RESPONSE_EVENT, (event) => {
+            useReasoningStore.getState().handleAirgapResponseEvent(event.payload);
+          }),
+        ]);
+
+        if (!isMounted) {
+          listeners.forEach((unlisten) => unlisten());
+        } else {
+          unlisteners = listeners;
+        }
+      } catch (err) {
+        console.error("Failed to register listeners:", err);
+      }
     };
 
     void attach();
@@ -316,7 +316,7 @@ export default function AppShell() {
       invoke<GatewaySessionRecord[]>("list_gateway_sessions", { limit: 16 }),
     ])
       .then(([overview, sessions]) => {
-        if (!active) {
+        if (!isMounted) {
           return;
         }
         setMemoryOverview(overview);
@@ -330,12 +330,12 @@ export default function AppShell() {
             maxChars: 2200,
           })
             .then((context) => {
-              if (active) {
+              if (isMounted) {
                 setSelectedSessionContext(context);
               }
             })
             .catch(() => {
-              if (active) {
+              if (isMounted) {
                 setSelectedSessionContext(null);
               }
             });
@@ -344,7 +344,7 @@ export default function AppShell() {
         setStatusText("○ STANDBY");
       })
       .catch((error) => {
-        if (!active) {
+        if (!isMounted) {
           return;
         }
         if (!String(error).includes(KERNEL_BOOTING_ERROR)) {
@@ -353,7 +353,7 @@ export default function AppShell() {
       });
 
     return () => {
-      active = false;
+      isMounted = false;
       unlisteners.forEach((unlisten) => unlisten());
     };
   }, [

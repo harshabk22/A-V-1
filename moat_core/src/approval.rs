@@ -1,7 +1,6 @@
 use crate::capabilities::Capability;
 use anyhow::Result;
 use std::io::{self, Write};
-use std::path::PathBuf;
 
 pub struct ApprovalRequest {
     pub agent_id: String,

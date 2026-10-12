@@ -2,7 +2,7 @@ use super::adapters::{ChannelAdapter, AdapterRegistry};
 use crate::gateway::SessionSource;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// State of a single channel adapter instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +30,7 @@ pub struct AdapterStatus {
 pub struct ChannelLifecycleManager {
     registry: Arc<Mutex<AdapterRegistry>>,
     states: Arc<Mutex<HashMap<SessionSource, AdapterStatus>>>,
+    #[allow(dead_code)]
     backoff_base: Duration,
     max_restarts: u64,
 }

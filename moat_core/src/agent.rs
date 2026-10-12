@@ -46,11 +46,6 @@ pub struct LoopState {
     pub consecutive_identical_failures: u32,
 }
 
-enum AgentAction {
-    Respond(String),
-    UseTool { tool_name: String, args: serde_json::Value },
-}
-
 /// Unified agent struct shared by Agent1 and Agent2.
 /// The `id` field parameterizes agent-specific behavior:
 /// - capability defaults (via CapabilitySet)
@@ -89,26 +84,6 @@ impl Agent {
 
     fn allows_delegation(&self) -> bool {
         matches!(self.id, AgentId::Agent1)
-    }
-
-    fn is_connector(&self) -> bool {
-        matches!(self.id, AgentId::Agent3)
-    }
-
-    fn prompt_load_fn(&self) -> fn() -> Result<String> {
-        match self.id {
-            AgentId::Agent1 => AgentConfig::load_agent1_prompt,
-            AgentId::Agent2 => AgentConfig::load_agent2_prompt,
-            AgentId::Agent3 => AgentConfig::load_agent3_prompt,
-        }
-    }
-
-    fn default_capabilities(&self) -> CapabilitySet {
-        match self.id {
-            AgentId::Agent1 => CapabilitySet::agent1_default(),
-            AgentId::Agent2 => CapabilitySet::agent2_default(),
-            AgentId::Agent3 => CapabilitySet::agx3_default(),
-        }
     }
 
     fn tools(&self) -> Vec<crate::llm::ToolDefinition> {
@@ -623,6 +598,7 @@ mod tests {
             last_failed_args: String::new(),
             consecutive_identical_failures: 0,
         };
+        assert_eq!(state.iteration, 10);
         state = LoopState::default();
         assert_eq!(state.iteration, 0);
         assert_eq!(state.tool_calls, 0);

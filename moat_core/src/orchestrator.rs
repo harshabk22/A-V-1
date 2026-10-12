@@ -1,6 +1,4 @@
 use active_win_pos_rs::get_active_window;
-use arboard::Clipboard;
-use enigo::{Enigo, Key, KeyboardControllable};
 use regex::Regex;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -8,14 +6,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::fs;
-use std::io::Read;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 use tokio::time::timeout;
@@ -31,11 +24,8 @@ use crate::external_api::ExternalApiConfig;
 use crate::external_api::{missing_key_provider_from_error, provider_display_name};
 use crate::hooks::run_precompute_memory_hook;
 use crate::memory;
-use crate::meta_brain::{MetaBrain, PermissionFlags, SubGraph};
-use crate::sandbox::{
-    cleanup_workspace_tmp_files, execute as execute_sandboxed, FileAccess, NetworkRule, PathRule,
-    SandboxProfileBuilder, SandboxedCommand, WorkspaceCapability,
-};
+use crate::meta_brain::{MetaBrain, PermissionFlags};
+use crate::sandbox::{FileAccess, WorkspaceCapability};
 use crate::skills::{
     get_skill, install_skill, interpreter_for_language, language_extension, list_skills,
     SkillProposal, SynthesizedSkill,
@@ -250,46 +240,6 @@ fn value_to_string(v: Option<&Value>) -> String {
     }
 }
 
-fn read_clipboard_backup(clipboard: &mut Clipboard) -> Result<ClipboardBackup, String> {
-    if let Ok(files) = clipboard.get().file_list() {
-        return Ok(ClipboardBackup::FileList(files));
-    }
-    if let Ok(image) = clipboard.get_image() {
-        return Ok(ClipboardBackup::Image(image));
-    }
-    if let Ok(html) = clipboard.get().html() {
-        return Ok(ClipboardBackup::Html(html));
-    }
-    if let Ok(text) = clipboard.get_text() {
-        return Ok(ClipboardBackup::Text(text));
-    }
-    Ok(ClipboardBackup::Empty)
-}
-
-fn restore_clipboard_backup(
-    clipboard: &mut Clipboard,
-    backup: ClipboardBackup,
-) -> Result<(), String> {
-    match backup {
-        ClipboardBackup::Text(text) => clipboard
-            .set_text(text)
-            .map_err(|err| format!("Clipboard restore failed: {err}")),
-        ClipboardBackup::Html(html) => clipboard
-            .set_html(html, None)
-            .map_err(|err| format!("Clipboard restore failed: {err}")),
-        ClipboardBackup::Image(image) => clipboard
-            .set_image(image)
-            .map_err(|err| format!("Clipboard restore failed: {err}")),
-        ClipboardBackup::FileList(files) => clipboard
-            .set()
-            .file_list(&files)
-            .map_err(|err| format!("Clipboard restore failed: {err}")),
-        ClipboardBackup::Empty => clipboard
-            .clear()
-            .map_err(|err| format!("Clipboard clear failed: {err}")),
-    }
-}
-
 fn extract_inject_text_payload(v: Option<&Value>) -> Option<(String, String)> {
     match v {
         Some(Value::Object(object)) => {
@@ -305,36 +255,6 @@ fn extract_inject_text_payload(v: Option<&Value>) -> Option<(String, String)> {
         }
         _ => None,
     }
-}
-
-fn inject_text_via_clipboard(text_to_inject: &str) -> Result<(), String> {
-    let mut clipboard =
-        Clipboard::new().map_err(|err| format!("Clipboard access failed: {err}"))?;
-    let backup = read_clipboard_backup(&mut clipboard)?;
-
-    clipboard
-        .set_text(text_to_inject.to_string())
-        .map_err(|err| format!("Clipboard write failed: {err}"))?;
-
-    let mut enigo = Enigo::new();
-    #[cfg(target_os = "macos")]
-    {
-        enigo.key_down(Key::Meta);
-        enigo.key_click(Key::Layout('v'));
-        enigo.key_up(Key::Meta);
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        enigo.key_down(Key::Control);
-        enigo.key_click(Key::Layout('v'));
-        enigo.key_up(Key::Control);
-    }
-
-    thread::sleep(Duration::from_millis(50));
-
-    restore_clipboard_backup(&mut clipboard, backup)?;
-
-    Ok(())
 }
 
 fn active_app_matches(expected_app_name: &str) -> Result<bool, String> {
@@ -458,6 +378,7 @@ pub trait LlmProvider: Send + Sync {
     ) -> BoxFuture<'a, MoatResult<(String, u32)>>;
 
     #[deprecated(note = "Migrating to strictly typed tool_calls via chat_complete")]
+    #[allow(deprecated)]
     fn complete_stream<'a>(
         &'a self,
         model: &'a str,
@@ -553,6 +474,7 @@ impl PlannerAgent {
             .await
     }
 
+    #[allow(deprecated)]
     pub async fn generate_intent_raw_with_system(
         &self,
         system_prompt: &str,
@@ -922,132 +844,6 @@ fn authorize_path(
             "CAPABILITY DENIED: '{}' is outside configured allowed paths",
             target
         ))
-    }
-}
-
-fn subgraph_path_rules(subgraph: &SubGraph) -> Vec<PathRule> {
-    subgraph
-        .allowed_paths
-        .iter()
-        .map(|(path, access)| PathRule {
-            path: path.clone(),
-            recursive: true,
-            access: *access,
-        })
-        .collect()
-}
-
-fn subgraph_network_rules(subgraph: &SubGraph) -> Vec<NetworkRule> {
-    subgraph
-        .allowed_domains
-        .iter()
-        .map(|domain| NetworkRule {
-            host: domain.clone(),
-            port: None,
-        })
-        .collect()
-}
-
-fn run_command(cmd: &mut Command, timeout: Duration) -> MoatResult<TaskStatus> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| {
-        MoatError::Orchestrator(format!("Command execution failed to start: {}", e))
-    })?;
-
-    let Some(mut stdout_pipe) = child.stdout.take() else {
-        return Err(MoatError::Orchestrator(
-            "Command stdout pipe was not available".into(),
-        ));
-    };
-    let Some(mut stderr_pipe) = child.stderr.take() else {
-        return Err(MoatError::Orchestrator(
-            "Command stderr pipe was not available".into(),
-        ));
-    };
-
-    let out_thread = thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stdout_pipe.read_to_string(&mut s);
-        s
-    });
-    let err_thread = thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr_pipe.read_to_string(&mut s);
-        s
-    });
-
-    let start = std::time::Instant::now();
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| MoatError::Orchestrator(format!("Command wait failed: {}", e)))?
-        {
-            break status;
-        }
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(TaskStatus::Failed {
-                exit_code: None,
-                stderr: format!("Command timed out after {:?}", timeout),
-            });
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-
-    let stdout = out_thread.join().unwrap_or_default();
-    let stderr = err_thread.join().unwrap_or_default();
-    if status.success() {
-        Ok(TaskStatus::Success { stdout })
-    } else {
-        Ok(TaskStatus::Failed {
-            exit_code: status.code(),
-            stderr,
-        })
-    }
-}
-
-fn sandbox_status(
-    binary: &str,
-    args: &[String],
-    subgraph: &SubGraph,
-    timeout: Duration,
-) -> MoatResult<TaskStatus> {
-    sandbox_status_with_extra_paths(binary, args, subgraph, Vec::new(), timeout)
-}
-
-fn sandbox_status_with_extra_paths(
-    binary: &str,
-    args: &[String],
-    subgraph: &SubGraph,
-    extra_path_rules: Vec<PathRule>,
-    timeout: Duration,
-) -> MoatResult<TaskStatus> {
-    let profile = SandboxProfileBuilder::new()
-        .add_path_rules(subgraph_path_rules(subgraph))
-        .add_path_rules(extra_path_rules)
-        .add_network_rules(subgraph_network_rules(subgraph))
-        .build()
-        .map_err(|e| {
-            MoatError::Sandbox(crate::sandbox::SandboxError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                e.to_string(),
-            )))
-        })?;
-
-    match execute_sandboxed(&SandboxedCommand {
-        binary,
-        args,
-        profile: &profile,
-        timeout: Some(timeout),
-    }) {
-        Ok(output) => Ok(TaskStatus::Success {
-            stdout: output.stdout,
-        }),
-        Err(err) => Ok(TaskStatus::Failed {
-            exit_code: None,
-            stderr: err.to_string(),
-        }),
     }
 }
 
@@ -1558,21 +1354,6 @@ impl WorkerAgent {
         }
     }
 
-    async fn relevant_subgraph(
-        &self,
-        root_node_id: u64,
-        intent: &ActionIntent,
-    ) -> MoatResult<SubGraph> {
-        let query = format!(
-            "{} {} {}",
-            intent.action,
-            intent.target,
-            value_to_string(intent.payload.as_ref())
-        );
-        let brain = self.meta_brain.read().await;
-        brain.focused_subgraph(root_node_id, &query, 5, 4)
-    }
-
     async fn handle_skill_proposal(
         &self,
         intent: &ActionIntent,
@@ -1652,7 +1433,7 @@ impl WorkerAgent {
     async fn action_synthesized_skill(
         &self,
         intent: &ActionIntent,
-        root_node_id: u64,
+        _root_node_id: u64,
     ) -> MoatResult<Option<TaskStatus>> {
         let skill = {
             let db = self.db.lock().await;
@@ -1890,9 +1671,9 @@ impl WorkerAgent {
     async fn action_os_click(
         &self,
         intent: &ActionIntent,
-        session_id: &str,
-        agent_label: &str,
-        high_risk_approvals: Arc<std::sync::atomic::AtomicUsize>,
+        _session_id: &str,
+        _agent_label: &str,
+        _high_risk_approvals: Arc<std::sync::atomic::AtomicUsize>,
     ) -> MoatResult<TaskStatus> {
         // Extract element_id from payload
         let element_id = match intent.payload.as_ref() {
@@ -1947,9 +1728,9 @@ impl WorkerAgent {
     async fn action_os_type_text(
         &self,
         intent: &ActionIntent,
-        session_id: &str,
-        agent_label: &str,
-        high_risk_approvals: Arc<std::sync::atomic::AtomicUsize>,
+        _session_id: &str,
+        _agent_label: &str,
+        _high_risk_approvals: Arc<std::sync::atomic::AtomicUsize>,
     ) -> MoatResult<TaskStatus> {
         // Extract element_id and text from payload
         let (element_id, text) = match intent.payload.as_ref() {
@@ -2077,7 +1858,7 @@ impl WorkerAgent {
             }
         } else {
             // ── Workspace-scoped path: use DEL ──
-            let (relative_path, absolute_path) = match resolve_workspace_target(target) {
+            let (_relative_path, absolute_path) = match resolve_workspace_target(target) {
                 Ok(paths) => paths,
                 Err(reason) => {
                     return Ok(TaskStatus::Failed {
@@ -2121,7 +1902,7 @@ impl WorkerAgent {
     }
 
     async fn action_fs_write(&self, intent: &ActionIntent) -> MoatResult<TaskStatus> {
-        let (relative_path, absolute_path) = match resolve_workspace_target(&intent.target) {
+        let (_relative_path, absolute_path) = match resolve_workspace_target(&intent.target) {
             Ok(paths) => paths,
             Err(reason) => {
                 return Ok(TaskStatus::Failed {
@@ -2199,7 +1980,7 @@ impl WorkerAgent {
     async fn action_process_spawn(
         &self,
         intent: &ActionIntent,
-        root_node_id: u64,
+        _root_node_id: u64,
     ) -> MoatResult<TaskStatus> {
         if is_blocked_process_spawn_binary(&intent.target) {
             return Ok(TaskStatus::Failed {
@@ -2380,9 +2161,9 @@ impl WorkerAgent {
     async fn action_os_inject_text(
         &self,
         intent: &ActionIntent,
-        session_id: &str,
-        agent_label: &str,
-        high_risk_approvals: Arc<std::sync::atomic::AtomicUsize>,
+        _session_id: &str,
+        _agent_label: &str,
+        _high_risk_approvals: Arc<std::sync::atomic::AtomicUsize>,
     ) -> MoatResult<TaskStatus> {
         if !self.config.allow_high_risk {
             return Ok(TaskStatus::Failed {
@@ -2462,7 +2243,7 @@ impl WorkerAgent {
     async fn action_net_curl(
         &self,
         intent: &ActionIntent,
-        root_node_id: u64,
+        _root_node_id: u64,
         session_id: &str,
         agent_label: &str,
         high_risk_approvals: Arc<std::sync::atomic::AtomicUsize>,
@@ -5020,6 +4801,7 @@ impl ChatAgent {
     /// instead of waiting for the full response. This eliminates TTFB
     /// latency on conversational replies — matching Hermes's always-stream
     /// pattern.
+    #[allow(deprecated)]
     pub async fn reply_streaming(
         &self,
         query: &str,
@@ -6118,11 +5900,4 @@ mod tests {
         );
         let _ = std::fs::remove_file(&db_path);
     }
-}
-enum ClipboardBackup {
-    Text(String),
-    Html(String),
-    Image(arboard::ImageData<'static>),
-    FileList(Vec<PathBuf>),
-    Empty,
 }

@@ -16,7 +16,7 @@ export interface ChatMessage {
 
 interface ChatState {
   messages: ChatMessage[];
-  messageIndex: Record<string, number>;
+  messageIndex: Record<string, string>;
   input: string;
   isBooting: boolean;
   isProcessing: boolean;
@@ -51,9 +51,6 @@ function mergeStreamingText(previous: string, incoming: string): string {
   }
   if (incoming.startsWith(previous)) {
     return incoming;
-  }
-  if (previous.endsWith(incoming)) {
-    return previous;
   }
   return `${previous}${incoming}`;
 }
@@ -152,16 +149,20 @@ export const useChatStore = create<ChatState>((set) => ({
   upsertStreamingMessage: (payload) =>
     set((state) => {
       const key = streamMessageKey(payload);
-      const currentIndex = state.messageIndex[key];
+      const targetMessageId = state.messageIndex[key];
       const role = payload.role === "system" ? "system" : "agent";
 
-      if (currentIndex === undefined) {
-        const newIndex = state.messages.length;
+      const existingIndex = targetMessageId
+        ? state.messages.findIndex((m) => m.id === targetMessageId)
+        : -1;
+
+      if (existingIndex === -1) {
+        const id = makeMessageId("stream");
         return {
           messages: [
             ...state.messages,
             {
-              id: makeMessageId("stream"),
+              id,
               role,
               text: payload.content,
               createdAt: Date.now(),
@@ -170,14 +171,14 @@ export const useChatStore = create<ChatState>((set) => ({
           ],
           messageIndex: {
             ...state.messageIndex,
-            [key]: newIndex,
+            [key]: id,
           },
         };
       }
 
       const messages = state.messages.slice();
-      const existing = messages[currentIndex];
-      messages[currentIndex] = {
+      const existing = messages[existingIndex];
+      messages[existingIndex] = {
         ...existing,
         role,
         text: mergeStreamingText(existing.text, payload.content),

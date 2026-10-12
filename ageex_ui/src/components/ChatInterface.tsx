@@ -163,9 +163,10 @@ export default function ChatInterface({
     if (!pane || !stickToBottomRef.current) {
       return;
     }
+    const isStreamingActive = messages.some((m) => m.isStreaming);
     pane.scrollTo({
       top: pane.scrollHeight,
-      behavior: messages.length <= 1 ? "auto" : "smooth",
+      behavior: messages.length <= 1 || isStreamingActive ? "auto" : "smooth",
     });
   }, [messages]);
 
@@ -516,6 +517,7 @@ export default function ChatInterface({
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing) return;
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
                     void handleSubmit();

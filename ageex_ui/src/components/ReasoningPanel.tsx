@@ -65,16 +65,49 @@ export default function ReasoningPanel() {
     }
   }, [auditLog.length]);
 
+  useEffect(() => {
+    let active = true;
+    const init = async () => {
+      try {
+        const ready = await invoke<boolean>("init_reasoning_engine");
+        if (!active) return;
+        useReasoningStore.getState().setEngineReady(ready);
+
+        const agentIds = await invoke<string[]>("list_agents");
+        if (!active) return;
+        agentIds.forEach((id) => {
+          useReasoningStore.getState().upsertAgent({
+            agentId: id,
+            state: "idle",
+            fuelRemaining: 0,
+            fuelBudget: 0,
+            envelopesSent: 0,
+            yieldMessage: "",
+          });
+        });
+      } catch (e) {
+        console.error("Failed to initialize reasoning engine:", e);
+      }
+    };
+    void init();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const handleFileUpload = useCallback(async (file: File) => {
     setUploadStatus(`Reading ${file.name}...`);
     try {
-      const buffer = await file.arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      let binary = "";
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      const wasmBase64 = btoa(binary);
+      const wasmBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = (reader.result as string) || "";
+          const commaIdx = res.indexOf(",");
+          resolve(commaIdx >= 0 ? res.slice(commaIdx + 1) : res);
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
       const agentId = file.name.replace(/\.wasm$/i, "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32) || "agent";
 
       setUploadStatus(`Instantiating ${agentId}...`);

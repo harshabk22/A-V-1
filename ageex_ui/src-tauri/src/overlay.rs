@@ -6,8 +6,12 @@
 //!
 //! Pattern: OpenJarvis NSPanel+WKWebView overlay (J1-J3).
 
+#![allow(unexpected_cfgs)]
+
 #[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
 mod macos {
+    #![allow(unexpected_cfgs)]
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
     use std::sync::Mutex;

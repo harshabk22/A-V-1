@@ -1,7 +1,5 @@
-use crate::context::{ContextStore, Message, ContextCompressor};
 use crate::session::SessionStore;
 use crate::security::guardrails::GuardrailsEngine;
-use crate::security::scanners::{Scanner, SecretScanner, InjectionScanner};
 use anyhow::Result;
 use std::sync::Arc;
 

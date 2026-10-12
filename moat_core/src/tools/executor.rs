@@ -4,7 +4,6 @@ use crate::approval::{ApprovalFlow, ApprovalRequest, ApprovalDecision};
 use crate::session::SessionStore;
 use crate::consent::ConsentBridge;
 use crate::execution::{DelExecutor, ExecutionError, ExecutionRequest};
-use crate::execution::gate2_policy::normalize_workspace_path;
 use crate::execution::journal::ExecutionJournal;
 use anyhow::Result;
 use std::fs::OpenOptions;
@@ -267,12 +266,6 @@ impl ToolExecutor {
             }
             unknown => anyhow::bail!("Unknown tool: {}", unknown),
         }
-    }
-
-    /// Execute an operation through DEL without MetaBrain permission checks.
-    /// Used by the orchestrator (which does its own MetaBrain checks).
-    pub(crate) fn execute_via_del(&self, del_tool_name: &str, args: serde_json::Value) -> Result<String> {
-        self.execute_del(del_tool_name, args)
     }
 
     fn execute_del(&self, del_tool_name: &str, args: serde_json::Value) -> Result<String> {

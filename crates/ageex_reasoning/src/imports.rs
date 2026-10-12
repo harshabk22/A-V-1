@@ -67,8 +67,7 @@ fn try_read_mem(caller: &Caller<'_, StoreData>, mem: &Memory, ptr: u32, len: u32
 // ─── Semantic validation ─────────────────────────────────────────────────
 
 fn contains_path_traversal(bytes: &[u8]) -> bool {
-    let s = std::str::from_utf8(bytes).unwrap_or("");
-    s.contains("..") || s.contains('\0')
+    bytes.windows(2).any(|w| w == b"..") || bytes.contains(&0)
 }
 
 fn contains_nul(bytes: &[u8]) -> bool {
@@ -245,7 +244,6 @@ async fn process_airgap_send_async(
     resp_ptr: u32,
     resp_cap: u32,
 ) -> i32 {
-    let raw_for_envelope = raw.clone();
     let parsed = match wire::parse_request(&raw) {
         Some(p) => p,
         None => {
@@ -286,11 +284,14 @@ async fn process_airgap_send_async(
         return AERR_PERMISSION_DENIED;
     }
 
+    let parsed_op = parsed.op();
+    let op_str = parsed.op_str();
+
     let envelope = AirgapEnvelope {
         agent_id,
         seq,
-        op: parsed.op(),
-        request_bytes: raw_for_envelope,
+        op: parsed_op,
+        request_bytes: raw,
     };
 
     let (response_tx, response_rx) = oneshot::channel();
@@ -305,7 +306,7 @@ async fn process_airgap_send_async(
         target: "ageex.reasoning",
         agent_id = ?agent_id,
         seq,
-        op = %parsed.op_str(),
+        op = %op_str,
         "airgap_send: enqueued, awaiting DEL response"
     );
 

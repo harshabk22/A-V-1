@@ -40,6 +40,10 @@ function makeAuditId(): string {
   return `audit:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function appendAudit(log: AuditEntry[], entry: AuditEntry): AuditEntry[] {
+  return log.length >= MAX_AUDIT ? [...log.slice(1), entry] : [...log, entry];
+}
+
 export const useReasoningStore = create<ReasoningState>((set, get) => ({
   agents: [],
   engineReady: false,
@@ -69,32 +73,43 @@ export const useReasoningStore = create<ReasoningState>((set, get) => ({
   setEnvelopeQueueSize: (size) => set({ envelopeQueueSize: size }),
 
   pushAudit: (entry) =>
-    set((state) => {
-      const log =
-        state.auditLog.length >= MAX_AUDIT
-          ? [...state.auditLog.slice(1), entry]
-          : [...state.auditLog, entry];
-      return { auditLog: log };
-    }),
+    set((state) => ({ auditLog: appendAudit(state.auditLog, entry) })),
 
-  handleEnvelopeEvent: (event) => {
-    const entry: AuditEntry = {
-      id: makeAuditId(),
-      timestamp: Date.now(),
-      kind: "envelope",
-      agentId: event.agentId,
-      message: `airgap_send seq=${event.seq} op=${event.op}`,
-    };
-    get().pushAudit(entry);
-    get().upsertAgent({
-      agentId: event.agentId,
-      state: "running",
-      fuelRemaining: 0,
-      fuelBudget: 0,
-      envelopesSent: event.seq + 1,
-      yieldMessage: "",
-    });
-  },
+  handleEnvelopeEvent: (event) =>
+    set((state) => {
+      const entry: AuditEntry = {
+        id: makeAuditId(),
+        timestamp: Date.now(),
+        kind: "envelope",
+        agentId: event.agentId,
+        message: `airgap_send seq=${event.seq} op=${event.op}`,
+      };
+      const idx = state.agents.findIndex((a) => a.agentId === event.agentId);
+      const existing = idx >= 0 ? state.agents[idx] : undefined;
+      const updatedAgent: AgentStatus = existing
+        ? {
+            ...existing,
+            state: "running",
+            envelopesSent: event.seq + 1,
+          }
+        : {
+            agentId: event.agentId,
+            state: "running",
+            fuelRemaining: 0,
+            fuelBudget: 0,
+            envelopesSent: event.seq + 1,
+            yieldMessage: "",
+          };
+
+      const agents = idx >= 0
+        ? state.agents.map((a, i) => (i === idx ? updatedAgent : a))
+        : [...state.agents, updatedAgent];
+
+      return {
+        auditLog: appendAudit(state.auditLog, entry),
+        agents,
+      };
+    }),
 
   handleViolationEvent: (event) => {
     const entry: AuditEntry = {
@@ -107,34 +122,53 @@ export const useReasoningStore = create<ReasoningState>((set, get) => ({
     get().pushAudit(entry);
   },
 
-  handleYieldEvent: (event) => {
-    const entry: AuditEntry = {
-      id: makeAuditId(),
-      timestamp: Date.now(),
-      kind: "yield",
-      agentId: event.agentId,
-      message: event.yieldMessage
-        ? `yielded: ${event.yieldMessage}`
-        : "agent yielded",
-    };
-    get().pushAudit(entry);
-    get().upsertAgent({
-      agentId: event.agentId,
-      state: "yielded",
-      fuelRemaining: 0,
-      fuelBudget: 0,
-      envelopesSent: event.envelopesSent,
-      yieldMessage: event.yieldMessage,
-    });
-  },
+  handleYieldEvent: (event) =>
+    set((state) => {
+      const entry: AuditEntry = {
+        id: makeAuditId(),
+        timestamp: Date.now(),
+        kind: "yield",
+        agentId: event.agentId,
+        message: event.yieldMessage
+          ? `yielded: ${event.yieldMessage}`
+          : "agent yielded",
+      };
+      const idx = state.agents.findIndex((a) => a.agentId === event.agentId);
+      const existing = idx >= 0 ? state.agents[idx] : undefined;
+      const updatedAgent: AgentStatus = existing
+        ? {
+            ...existing,
+            state: "yielded",
+            envelopesSent: event.envelopesSent,
+            yieldMessage: event.yieldMessage,
+          }
+        : {
+            agentId: event.agentId,
+            state: "yielded",
+            fuelRemaining: 0,
+            fuelBudget: 0,
+            envelopesSent: event.envelopesSent,
+            yieldMessage: event.yieldMessage,
+          };
+
+      const agents = idx >= 0
+        ? state.agents.map((a, i) => (i === idx ? updatedAgent : a))
+        : [...state.agents, updatedAgent];
+
+      return {
+        auditLog: appendAudit(state.auditLog, entry),
+        agents,
+      };
+    }),
 
   handleAirgapResponseEvent: (event) => {
+    const isSuccess = event.isSuccess ?? (event as any).is_success;
     const entry: AuditEntry = {
       id: makeAuditId(),
       timestamp: Date.now(),
       kind: "step",
       agentId: event.agentId,
-      message: `DEL response seq=${event.seq} op=${event.op} ${event.isSuccess ? "success" : "error"}`,
+      message: `DEL response seq=${event.seq} op=${event.op} ${isSuccess ? "success" : "error"}`,
     };
     get().pushAudit(entry);
   },

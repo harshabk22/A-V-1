@@ -539,6 +539,7 @@ fn nvidia_model_match_score(requested_model: &str, model_hint: &str) -> u8 {
 
 #[derive(Clone)]
 struct DeepSeekCredential {
+    #[allow(dead_code)]
     profile_id: String,
     label: String,
     model_hint: String,
@@ -637,6 +638,7 @@ struct NvidiaMultiClient {
     credentials: Vec<NvidiaCredential>,
 }
 
+#[allow(deprecated)]
 impl LlmProvider for NvidiaMultiClient {
     fn complete<'a>(
         &'a self,
@@ -775,6 +777,7 @@ impl LlmProvider for NvidiaMultiClient {
     }
 }
 
+#[allow(deprecated)]
 impl LlmProvider for NvidiaExternalClient {
     fn complete<'a>(
         &'a self,
@@ -1022,6 +1025,7 @@ struct DeepSeekMultiClient {
     credentials: Vec<DeepSeekCredential>,
 }
 
+#[allow(deprecated)]
 impl LlmProvider for DeepSeekMultiClient {
     fn complete<'a>(
         &'a self,
@@ -1130,6 +1134,7 @@ impl LlmProvider for DeepSeekMultiClient {
     }
 }
 
+#[allow(deprecated)]
 impl LlmProvider for DeepSeekExternalClient {
     fn complete<'a>(
         &'a self,
