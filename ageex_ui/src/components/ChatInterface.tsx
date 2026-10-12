@@ -308,10 +308,11 @@ export default function ChatInterface({
           </button>
           <span
             style={{
-              color: "#8b98af",
+              color: isProcessing ? "#7ee0a1" : isBooting ? "#ffbe5c" : "#8b98af",
               fontSize: "0.82rem",
               fontWeight: 700,
             }}
+            title={statusText}
           >
             ●
           </span>
